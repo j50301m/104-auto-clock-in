@@ -73,8 +73,8 @@ SENDER_FILTERS = [
 ]
 
 # 隨機延遲範圍（秒），避免每天在完全相同的時間打卡
-RANDOM_DELAY_MIN = 0       # 最少延遲秒數
-RANDOM_DELAY_MAX = 300     # 最多延遲秒數 (預設 5 分鐘)
+RANDOM_DELAY_MIN = int(os.environ.get("RANDOM_DELAY_MIN", "0"))       # 最少延遲秒數
+RANDOM_DELAY_MAX = int(os.environ.get("RANDOM_DELAY_MAX", "300"))     # 最多延遲秒數 (預設 5 分鐘)
 
 # 重試設定
 MAX_RETRIES = 3
