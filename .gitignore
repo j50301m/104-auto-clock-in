@@ -1,0 +1,12 @@
+# 環境變數 (包含密碼，絕對不要上傳)
+.env
+
+# 日誌和截圖
+logs/
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

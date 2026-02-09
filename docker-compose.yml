@@ -1,0 +1,38 @@
+# ============================================================
+# 104 企業大師自動打卡 - Docker Compose
+# ============================================================
+#
+# 使用方式:
+#   docker compose up clock-in   # 上班打卡
+#   docker compose up clock-out  # 下班打卡
+#
+# 搭配 cron 使用:
+#   50 8 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-in
+#   5 18 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-out
+#
+# ============================================================
+
+services:
+  clock-in:
+    build: .
+    command: ["--action", "clock_in"]
+    environment:
+      - PRO104_ACCOUNT=${PRO104_ACCOUNT}
+      - PRO104_PASSWORD=${PRO104_PASSWORD}
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+    env_file:
+      - .env
+
+  clock-out:
+    build: .
+    command: ["--action", "clock_out"]
+    environment:
+      - PRO104_ACCOUNT=${PRO104_ACCOUNT}
+      - PRO104_PASSWORD=${PRO104_PASSWORD}
+    volumes:
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+    env_file:
+      - .env
