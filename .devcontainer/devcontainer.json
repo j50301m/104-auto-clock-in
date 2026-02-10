@@ -1,6 +1,6 @@
 {
 	"name": "Python & Playwright Dev Environment",
-	"image": "mcr.microsoft.com/playwright/python:v1.49.0-noble",
+	"image": "mcr.microsoft.com/playwright/python:v1.58.0-noble",
 	"customizations": {
 		"vscode": {
 			"extensions": [
