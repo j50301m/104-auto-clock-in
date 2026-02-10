@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-104 企業大師 (pro.104.com.tw) 自動打卡腳本
-使用 Playwright 進行瀏覽器自動化 + Gmail IMAP 讀取 2FA 驗證碼
+104 Pro (pro.104.com.tw) Automatic Clock-In Script
+Uses Playwright for browser automation + Gmail IMAP for 2FA code retrieval
 
-使用方式:
-    python clock_in.py --action clock_in   # 上班打卡
-    python clock_in.py --action clock_out  # 下班打卡
+Usage:
+    python clock_in.py --action clock_in   # Clock in (start of work)
+    python clock_in.py --action clock_out  # Clock out (end of work)
 
-環境變數:
-    PRO104_ACCOUNT    - 104 登入帳號
-    PRO104_PASSWORD   - 104 登入密碼
-    GMAIL_ADDRESS     - Gmail 地址 (收驗證碼用)
-    GMAIL_APP_PASSWORD - Gmail 應用程式密碼 (非 Gmail 登入密碼)
+Environment Variables:
+    PRO104_ACCOUNT     - 104 login account
+    PRO104_PASSWORD    - 104 login password
+    GMAIL_ADDRESS      - Gmail address (for receiving verification codes)
+    GMAIL_APP_PASSWORD - Gmail app password (not Gmail login password)
 
-作者: Claude (為 jason 客製化)
+Author: Claude (customized for jason)
 """
 
 import os
@@ -32,944 +32,923 @@ from email.header import decode_header
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+from typing import Optional
 
-# 載入 .env 檔案（自動找腳本同目錄下的 .env）
+# Load .env file (automatically find .env in the same directory as the script)
 load_dotenv(Path(__file__).parent / ".env")
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 except ImportError:
-    print("請先安裝 Playwright: pip install playwright && playwright install chromium")
+    print("Please install Playwright: pip install playwright && playwright install chromium")
     sys.exit(1)
 
 
-# ============================================================
-# 設定區
-# ============================================================
+class Config:
+    """Configuration manager for the clock-in script"""
 
-# 104 企業大師相關 URL
-LOGIN_URL = "https://bsignin.104.com.tw/login"
-CLOCK_URL = "https://pro.104.com.tw/psc2/attendance/punch"
+    # URLs
+    LOGIN_URL = "https://bsignin.104.com.tw/login"
+    CLOCK_URL = "https://pro.104.com.tw/psc2/attendance/punch"
 
-# 登入資訊 (從 .env 檔案或環境變數讀取)
-ACCOUNT = os.environ.get("PRO104_ACCOUNT", "")
-PASSWORD = os.environ.get("PRO104_PASSWORD", "")
+    # Login credentials (from .env or environment variables)
+    ACCOUNT = os.environ.get("PRO104_ACCOUNT", "")
+    PASSWORD = os.environ.get("PRO104_PASSWORD", "")
 
-# Gmail 設定 (用於讀取 2FA 驗證碼)
-GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
-GMAIL_IMAP_SERVER = "imap.gmail.com"
-GMAIL_IMAP_PORT = 993
+    # Gmail settings (for 2FA code retrieval)
+    GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
+    GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+    GMAIL_IMAP_SERVER = "imap.gmail.com"
+    GMAIL_IMAP_PORT = 993
 
-# Telegram Bot 設定 (用於打卡成功通知)
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+    # Telegram Bot settings (for success notifications)
+    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 驗證碼相關設定
-VERIFICATION_CODE_WAIT = 60      # 最多等待驗證碼幾秒
-VERIFICATION_CODE_POLL = 5       # 每幾秒檢查一次信箱
-VERIFICATION_CODE_LENGTH = 6     # 驗證碼長度 (通常是 6 碼數字)
+    # Verification code settings
+    VERIFICATION_CODE_WAIT = 60      # Max seconds to wait for verification code
+    VERIFICATION_CODE_POLL = 5       # Check email every N seconds
+    VERIFICATION_CODE_LENGTH = 6     # Verification code length (usually 6 digits)
 
-# 104 寄件者 email（用於篩選信件）
-# ⬇️ 請根據實際收到的驗證碼信件調整寄件者 ⬇️
-SENDER_FILTERS = [
-    "104.com.tw",
-    "pro.104.com.tw",
-    "noreply@104.com.tw",
-    "service@104.com.tw",
-]
-
-# 隨機延遲範圍（秒），避免每天在完全相同的時間打卡
-RANDOM_DELAY_MIN = int(os.environ.get("RANDOM_DELAY_MIN", "0"))       # 最少延遲秒數
-RANDOM_DELAY_MAX = int(os.environ.get("RANDOM_DELAY_MAX", "300"))     # 最多延遲秒數 (預設 5 分鐘)
-
-# 重試設定
-MAX_RETRIES = 3
-RETRY_INTERVAL = 30  # 秒
-
-# 截圖保存路徑（用於除錯）
-SCREENSHOT_DIR = Path(__file__).parent / "screenshots"
-
-# 日誌設定
-LOG_DIR = Path(__file__).parent / "logs"
-
-
-# ============================================================
-# 日誌設定
-# ============================================================
-
-def setup_logging():
-    """設定日誌"""
-    LOG_DIR.mkdir(exist_ok=True)
-    log_file = LOG_DIR / f"clockin_{datetime.now().strftime('%Y%m%d')}.log"
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
-    return logging.getLogger(__name__)
-
-
-logger = setup_logging()
-
-
-# ============================================================
-# 工具函式
-# ============================================================
-
-def random_delay():
-    """加入隨機延遲，模擬人類行為"""
-    delay = random.randint(RANDOM_DELAY_MIN, RANDOM_DELAY_MAX)
-    if delay > 0:
-        logger.info(f"隨機延遲 {delay} 秒...")
-        time.sleep(delay)
-
-
-def take_screenshot(page, name: str, debug: bool = False):
-    """截圖用於除錯（只在 debug 模式下執行）"""
-    if not debug:
-        return
-    SCREENSHOT_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = SCREENSHOT_DIR / f"{name}_{timestamp}.png"
-    page.screenshot(path=str(filepath), full_page=True)
-    logger.info(f"截圖已保存: {filepath}")
-
-
-def is_weekday() -> bool:
-    """檢查今天是否為工作日 (週一到週五)"""
-    return datetime.now().weekday() < 5
-
-
-def send_telegram_notification(message: str) -> bool:
-    """
-    發送 Telegram 通知
-
-    Args:
-        message: 要發送的訊息內容
-
-    Returns:
-        成功回傳 True，失敗回傳 False
-    """
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.debug("未設定 Telegram bot，跳過通知")
-        return False
-
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-        data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }
-
-        # 使用 urllib 發送 POST 請求
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(data).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status == 200:
-                logger.info("✅ Telegram 通知已發送")
-                return True
-            else:
-                logger.warning(f"Telegram 通知發送失敗: HTTP {response.status}")
-                return False
-
-    except Exception as e:
-        logger.warning(f"發送 Telegram 通知時發生錯誤: {e}")
-        return False
-
-
-# ============================================================
-# Gmail 2FA 驗證碼讀取
-# ============================================================
-
-def decode_mime_header(header_value: str) -> str:
-    """解碼 MIME 編碼的 email header"""
-    decoded_parts = decode_header(header_value)
-    result = ""
-    for part, charset in decoded_parts:
-        if isinstance(part, bytes):
-            result += part.decode(charset or "utf-8", errors="replace")
-        else:
-            result += part
-    return result
-
-
-def get_email_body(msg) -> str:
-    """從 email message 物件中取得純文字內容"""
-    body = ""
-
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition", ""))
-
-            # 跳過附件
-            if "attachment" in content_disposition:
-                continue
-
-            if content_type == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    body += payload.decode(charset, errors="replace")
-            elif content_type == "text/html" and not body:
-                # 如果沒有純文字版本，用 HTML 版本
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    html_text = payload.decode(charset, errors="replace")
-                    # 簡單移除 HTML 標籤
-                    body += re.sub(r"<[^>]+>", " ", html_text)
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            body = payload.decode(charset, errors="replace")
-
-    return body
-
-
-def extract_verification_code(text: str) -> str | None:
-    """
-    從文字中提取驗證碼
-
-    ⬇️ 請根據實際收到的驗證碼信件格式調整 ⬇️
-
-    常見的驗證碼格式:
-    - 純數字: 123456
-    - 信件中包含: "驗證碼: 123456" 或 "verification code: 123456"
-    """
-    # 策略1: 找「驗證碼」關鍵字後面的數字
-    patterns = [
-        r"驗證碼[：:\s]*(\d{4,8})",
-        r"verification\s*code[：:\s]*(\d{4,8})",
-        r"認證碼[：:\s]*(\d{4,8})",
-        r"確認碼[：:\s]*(\d{4,8})",
-        r"OTP[：:\s]*(\d{4,8})",
-        r"代碼[：:\s]*(\d{4,8})",
+    # 104 sender email filters
+    SENDER_FILTERS = [
+        "104.com.tw",
+        "pro.104.com.tw",
+        "noreply@104.com.tw",
+        "service@104.com.tw",
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
+    # Random delay range (seconds) to avoid clocking in at the exact same time every day
+    RANDOM_DELAY_MIN = int(os.environ.get("RANDOM_DELAY_MIN", "0"))
+    RANDOM_DELAY_MAX = int(os.environ.get("RANDOM_DELAY_MAX", "300"))
 
-    # 策略2: 找獨立的 N 位數字 (可能是驗證碼)
-    # 尋找被空白或標點符號包圍的 4-8 位數字
-    standalone_numbers = re.findall(r"(?<!\d)(\d{4,8})(?!\d)", text)
-    if standalone_numbers:
-        # 優先回傳指定長度的
-        for num in standalone_numbers:
-            if len(num) == VERIFICATION_CODE_LENGTH:
-                return num
-        # 否則回傳第一個找到的
-        return standalone_numbers[0]
+    # Retry settings
+    MAX_RETRIES = 3
+    RETRY_INTERVAL = 30  # seconds
 
-    return None
+    # Screenshot save path (for debugging)
+    SCREENSHOT_DIR = Path(__file__).parent / "screenshots"
+
+    # Log settings
+    LOG_DIR = Path(__file__).parent / "logs"
+
+    @classmethod
+    def validate(cls) -> bool:
+        """Validate required configuration"""
+        if not cls.ACCOUNT or not cls.PASSWORD:
+            return False
+        return True
 
 
-def fetch_verification_code_from_gmail(after_timestamp: datetime) -> str | None:
-    """
-    從 Gmail 讀取 104 企業大師的 2FA 驗證碼
+class Logger:
+    """Logging manager"""
 
-    Args:
-        after_timestamp: 只搜尋這個時間之後的信件
+    def __init__(self):
+        self.logger = self._setup_logging()
 
-    Returns:
-        驗證碼字串，找不到則回傳 None
-    """
-    logger.info("正在連接 Gmail IMAP...")
+    def _setup_logging(self) -> logging.Logger:
+        """Setup logging configuration"""
+        Config.LOG_DIR.mkdir(exist_ok=True)
+        log_file = Config.LOG_DIR / f"clockin_{datetime.now().strftime('%Y%m%d')}.log"
 
-    try:
-        # 連接 Gmail IMAP
-        mail = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT)
-        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        mail.select("INBOX")
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            handlers=[
+                logging.FileHandler(log_file, encoding="utf-8"),
+                logging.StreamHandler(sys.stdout),
+            ],
+        )
+        return logging.getLogger(__name__)
 
-        logger.info("已連接 Gmail，正在搜尋驗證碼信件...")
+    def info(self, message: str):
+        self.logger.info(message)
 
-        # 搜尋條件：今天的信件
-        date_str = after_timestamp.strftime("%d-%b-%Y")
-        search_criteria = f'(SINCE "{date_str}")'
+    def warning(self, message: str):
+        self.logger.warning(message)
 
-        status, message_ids = mail.search(None, search_criteria)
+    def error(self, message: str):
+        self.logger.error(message)
 
-        if status != "OK" or not message_ids[0]:
-            logger.info("沒有找到符合條件的信件")
+    def debug(self, message: str):
+        self.logger.debug(message)
+
+
+class TelegramNotifier:
+    """Telegram notification sender"""
+
+    def __init__(self, logger: Logger):
+        self.logger = logger
+        self.bot_token = Config.TELEGRAM_BOT_TOKEN
+        self.chat_id = Config.TELEGRAM_CHAT_ID
+
+    def send(self, message: str) -> bool:
+        """
+        Send Telegram notification
+
+        Args:
+            message: Message content to send
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.bot_token or not self.chat_id:
+            self.logger.debug("Telegram bot not configured, skipping notification")
+            return False
+
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+
+            data = {
+                "chat_id": self.chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    self.logger.info("✅ Telegram notification sent")
+                    return True
+                else:
+                    self.logger.warning(f"Telegram notification failed: HTTP {response.status}")
+                    return False
+
+        except Exception as e:
+            self.logger.warning(f"Error sending Telegram notification: {e}")
+            return False
+
+
+class GmailOTPReader:
+    """Gmail OTP (One-Time Password) reader for 2FA"""
+
+    def __init__(self, logger: Logger):
+        self.logger = logger
+        self.gmail_address = Config.GMAIL_ADDRESS
+        self.gmail_password = Config.GMAIL_APP_PASSWORD
+        self.imap_server = Config.GMAIL_IMAP_SERVER
+        self.imap_port = Config.GMAIL_IMAP_PORT
+
+    @staticmethod
+    def decode_mime_header(header_value: str) -> str:
+        """Decode MIME-encoded email header"""
+        decoded_parts = decode_header(header_value)
+        result = ""
+        for part, charset in decoded_parts:
+            if isinstance(part, bytes):
+                result += part.decode(charset or "utf-8", errors="replace")
+            else:
+                result += part
+        return result
+
+    @staticmethod
+    def get_email_body(msg) -> str:
+        """Extract plain text content from email message object"""
+        body = ""
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition", ""))
+
+                # Skip attachments
+                if "attachment" in content_disposition:
+                    continue
+
+                if content_type == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        body += payload.decode(charset, errors="replace")
+                elif content_type == "text/html" and not body:
+                    # Use HTML version if no plain text version
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        html_text = payload.decode(charset, errors="replace")
+                        # Simple HTML tag removal
+                        body += re.sub(r"<[^>]+>", " ", html_text)
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or "utf-8"
+                body = payload.decode(charset, errors="replace")
+
+        return body
+
+    def extract_verification_code(self, text: str) -> Optional[str]:
+        """
+        Extract verification code from text
+
+        Common verification code formats:
+        - Pure digits: 123456
+        - In email: "Verification code: 123456" or "verification code: 123456"
+        """
+        # Strategy 1: Find digits after "verification code" keywords
+        patterns = [
+            r"驗證碼[：:\s]*(\d{4,8})",
+            r"verification\s*code[：:\s]*(\d{4,8})",
+            r"認證碼[：:\s]*(\d{4,8})",
+            r"確認碼[：:\s]*(\d{4,8})",
+            r"OTP[：:\s]*(\d{4,8})",
+            r"代碼[：:\s]*(\d{4,8})",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        # Strategy 2: Find standalone N-digit numbers (possibly verification code)
+        # Find 4-8 digit numbers surrounded by whitespace or punctuation
+        standalone_numbers = re.findall(r"(?<!\d)(\d{4,8})(?!\d)", text)
+        if standalone_numbers:
+            # Prefer the specified length
+            for num in standalone_numbers:
+                if len(num) == Config.VERIFICATION_CODE_LENGTH:
+                    return num
+            # Otherwise return the first one found
+            return standalone_numbers[0]
+
+        return None
+
+    def fetch_verification_code(self, after_timestamp: datetime) -> Optional[str]:
+        """
+        Read 104 Pro 2FA verification code from Gmail
+
+        Args:
+            after_timestamp: Only search for emails after this time
+
+        Returns:
+            Verification code string, or None if not found
+        """
+        self.logger.info("Connecting to Gmail IMAP...")
+
+        try:
+            # Connect to Gmail IMAP
+            mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+            mail.login(self.gmail_address, self.gmail_password)
+            mail.select("INBOX")
+
+            self.logger.info("Connected to Gmail, searching for verification code email...")
+
+            # Search criteria: emails from today
+            date_str = after_timestamp.strftime("%d-%b-%Y")
+            search_criteria = f'(SINCE "{date_str}")'
+
+            status, message_ids = mail.search(None, search_criteria)
+
+            if status != "OK" or not message_ids[0]:
+                self.logger.info("No emails found matching criteria")
+                mail.logout()
+                return None
+
+            # Start from the most recent emails
+            ids = message_ids[0].split()
+            ids.reverse()  # Most recent first
+
+            for msg_id in ids[:20]:  # Check only the last 20 emails
+                status, msg_data = mail.fetch(msg_id, "(RFC822)")
+                if status != "OK":
+                    continue
+
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                # Check sender
+                sender = self.decode_mime_header(msg.get("From", ""))
+                is_from_104 = any(f in sender.lower() for f in Config.SENDER_FILTERS)
+
+                if not is_from_104:
+                    continue
+
+                # Check email timestamp
+                date_str_raw = msg.get("Date", "")
+                try:
+                    msg_date = email.utils.parsedate_to_datetime(date_str_raw)
+                    # Ensure it was received after the trigger time
+                    if msg_date.replace(tzinfo=None) < after_timestamp.replace(tzinfo=None):
+                        continue
+                except (ValueError, TypeError):
+                    pass  # Unable to parse date, continue trying
+
+                # Get email content
+                subject = self.decode_mime_header(msg.get("Subject", ""))
+                body = self.get_email_body(msg)
+
+                self.logger.info(f"Found email from 104: {subject}")
+
+                # First try to find code in subject
+                code = self.extract_verification_code(subject)
+                if code:
+                    self.logger.info(f"Found verification code in subject: {code}")
+                    mail.logout()
+                    return code
+
+                # Then try to find code in body
+                code = self.extract_verification_code(body)
+                if code:
+                    self.logger.info(f"Found verification code in body: {code}")
+                    mail.logout()
+                    return code
+
+                self.logger.debug("No verification code found in this email, continuing search...")
+
             mail.logout()
             return None
 
-        # 從最新的信件開始找
-        ids = message_ids[0].split()
-        ids.reverse()  # 最新的在前面
+        except imaplib.IMAP4.error as e:
+            self.logger.error(f"Gmail IMAP error: {e}")
+            self.logger.error("Please check if GMAIL_APP_PASSWORD is correctly set")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error reading Gmail: {e}")
+            return None
 
-        for msg_id in ids[:20]:  # 只檢查最近 20 封
-            status, msg_data = mail.fetch(msg_id, "(RFC822)")
-            if status != "OK":
-                continue
+    def wait_and_fetch(self, after_timestamp: datetime) -> Optional[str]:
+        """
+        Wait and fetch verification code (continuously polls Gmail)
 
-            raw_email = msg_data[0][1]
-            msg = email.message_from_bytes(raw_email)
+        Args:
+            after_timestamp: Only search for emails after this time
 
-            # 檢查寄件者
-            sender = decode_mime_header(msg.get("From", ""))
-            is_from_104 = any(f in sender.lower() for f in SENDER_FILTERS)
-
-            if not is_from_104:
-                continue
-
-            # 檢查信件時間
-            date_str_raw = msg.get("Date", "")
-            try:
-                msg_date = email.utils.parsedate_to_datetime(date_str_raw)
-                # 確保是在觸發時間之後收到的
-                if msg_date.replace(tzinfo=None) < after_timestamp.replace(tzinfo=None):
-                    continue
-            except (ValueError, TypeError):
-                pass  # 無法解析日期，繼續嘗試
-
-            # 取得信件內容
-            subject = decode_mime_header(msg.get("Subject", ""))
-            body = get_email_body(msg)
-
-            logger.info(f"找到 104 的信件: {subject}")
-
-            # 先從主旨找驗證碼
-            code = extract_verification_code(subject)
-            if code:
-                logger.info(f"從信件主旨中找到驗證碼: {code}")
-                mail.logout()
-                return code
-
-            # 再從內文找驗證碼
-            code = extract_verification_code(body)
-            if code:
-                logger.info(f"從信件內文中找到驗證碼: {code}")
-                mail.logout()
-                return code
-
-            logger.debug(f"這封信沒有找到驗證碼，繼續搜尋...")
-
-        mail.logout()
-        return None
-
-    except imaplib.IMAP4.error as e:
-        logger.error(f"Gmail IMAP 錯誤: {e}")
-        logger.error("請確認 GMAIL_APP_PASSWORD 是否正確設定")
-        return None
-    except Exception as e:
-        logger.error(f"讀取 Gmail 時發生錯誤: {e}")
-        return None
-
-
-def wait_and_get_verification_code(after_timestamp: datetime) -> str | None:
-    """
-    等待並取得驗證碼（會持續輪詢 Gmail）
-
-    Args:
-        after_timestamp: 只搜尋這個時間之後的信件
-
-    Returns:
-        驗證碼字串，超時則回傳 None
-    """
-    logger.info(
-        f"等待驗證碼信件... (最多等待 {VERIFICATION_CODE_WAIT} 秒, "
-        f"每 {VERIFICATION_CODE_POLL} 秒檢查一次)"
-    )
-
-    elapsed = 0
-    while elapsed < VERIFICATION_CODE_WAIT:
-        code = fetch_verification_code_from_gmail(after_timestamp)
-        if code:
-            return code
-
-        logger.info(
-            f"尚未收到驗證碼，{VERIFICATION_CODE_POLL} 秒後重試... "
-            f"({elapsed}/{VERIFICATION_CODE_WAIT}s)"
+        Returns:
+            Verification code string, or None if timeout
+        """
+        self.logger.info(
+            f"Waiting for verification code email... (max wait {Config.VERIFICATION_CODE_WAIT}s, "
+            f"checking every {Config.VERIFICATION_CODE_POLL}s)"
         )
-        time.sleep(VERIFICATION_CODE_POLL)
-        elapsed += VERIFICATION_CODE_POLL
 
-    logger.error(f"等待 {VERIFICATION_CODE_WAIT} 秒後仍未收到驗證碼")
-    return None
+        elapsed = 0
+        while elapsed < Config.VERIFICATION_CODE_WAIT:
+            code = self.fetch_verification_code(after_timestamp)
+            if code:
+                return code
+
+            self.logger.info(
+                f"Verification code not yet received, retrying in {Config.VERIFICATION_CODE_POLL}s... "
+                f"({elapsed}/{Config.VERIFICATION_CODE_WAIT}s)"
+            )
+            time.sleep(Config.VERIFICATION_CODE_POLL)
+            elapsed += Config.VERIFICATION_CODE_POLL
+
+        self.logger.error(f"No verification code received after waiting {Config.VERIFICATION_CODE_WAIT}s")
+        return None
 
 
-# ============================================================
-# 核心邏輯
-# ============================================================
+class Pro104ClockIn:
+    """104 Pro automatic clock-in bot"""
 
-def login(page, debug: bool = False) -> bool:
-    """
-    登入 104 企業大師（含 2FA 驗證碼處理）
+    def __init__(self, logger: Logger, debug: bool = False):
+        self.logger = logger
+        self.debug = debug
+        self.otp_reader = GmailOTPReader(logger)
+        self.notifier = TelegramNotifier(logger)
+        self.page = None
 
-    流程:
-    1. 輸入帳號密碼 → 點擊登入
-    2. 頁面出現驗證碼輸入框
-    3. 從 Gmail 讀取驗證碼
-    4. 輸入驗證碼 → 完成登入
+    def take_screenshot(self, name: str):
+        """Take screenshot for debugging (only in debug mode)"""
+        if not self.debug:
+            return
+        Config.SCREENSHOT_DIR.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = Config.SCREENSHOT_DIR / f"{name}_{timestamp}.png"
+        self.page.screenshot(path=str(filepath), full_page=True)
+        self.logger.info(f"Screenshot saved: {filepath}")
 
-    ⚠️ 重要：你需要根據實際頁面調整下方的 selector
-    """
-    logger.info(f"正在前往登入頁: {LOGIN_URL}")
-    page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
-    time.sleep(2)
+    @staticmethod
+    def is_weekday() -> bool:
+        """Check if today is a weekday (Monday to Friday)"""
+        return datetime.now().weekday() < 5
 
-    take_screenshot(page, "01_login_page", debug)
+    def random_delay(self):
+        """Add random delay to simulate human behavior"""
+        delay = random.randint(Config.RANDOM_DELAY_MIN, Config.RANDOM_DELAY_MAX)
+        if delay > 0:
+            self.logger.info(f"Random delay: {delay}s...")
+            time.sleep(delay)
 
-    # -----------------------------------------------------------
-    # 步驟 1: 輸入帳號密碼
-    # ⬇️ 以下 selector 需要根據實際頁面調整 ⬇️
-    # -----------------------------------------------------------
+    def find_element(self, selectors: list, name: str, required: bool = True):
+        """
+        Try multiple selectors to find page element
 
-    account_selectors = [
-        'input[name="account"]',
-        'input[name="username"]',
-        'input[name="email"]',
-        'input[type="email"]',
-        'input[placeholder*="帳號"]',
-        'input[placeholder*="Email"]',
-        '#account',
-        '#username',
-    ]
+        Args:
+            selectors: List of selectors to try
+            name: Element name (for logging)
+            required: Whether this is a required element (error if not found)
 
-    password_selectors = [
-        'input[name="password"]',
-        'input[type="password"]',
-        '#password',
-    ]
+        Returns:
+            Found element, or None
+        """
+        for selector in selectors:
+            try:
+                element = self.page.wait_for_selector(selector, timeout=3000)
+                if element and element.is_visible():
+                    self.logger.info(f"Found {name}: {selector}")
+                    return element
+            except PlaywrightTimeout:
+                continue
 
-    login_button_selectors = [
-        'button[type="submit"]',
-        'button:has-text("登入")',
-        'input[type="submit"]',
-        'a:has-text("登入")',
-        '.login-btn',
-        '#loginBtn',
-    ]
+        if required:
+            self.logger.error(f"Cannot find {name}! Please check selector settings.")
+            self.take_screenshot(f"error_no_{name}")
+        return None
 
-    # 找到帳號輸入框
-    account_input = _find_element(page, account_selectors, "帳號輸入框", debug=debug)
-    if not account_input:
-        return False
+    def login(self) -> bool:
+        """
+        Login to 104 Pro (including 2FA verification code handling)
 
-    # 找到密碼輸入框
-    password_input = _find_element(page, password_selectors, "密碼輸入框", debug=debug)
-    if not password_input:
-        return False
-
-    # 輸入帳號密碼（模擬人類打字速度）
-    account_input.click()
-    account_input.fill("")
-    account_input.type(ACCOUNT, delay=random.randint(50, 150))
-    time.sleep(0.5)
-
-    password_input.click()
-    password_input.fill("")
-    password_input.type(PASSWORD, delay=random.randint(50, 150))
-    time.sleep(0.5)
-
-    take_screenshot(page, "02_credentials_filled", debug)
-
-    # 記錄送出時間（用於篩選驗證碼信件）
-    submit_timestamp = datetime.now() - timedelta(seconds=30)
-
-    # 點擊登入
-    login_button = _find_element(page, login_button_selectors, "登入按鈕", debug=debug)
-    if not login_button:
-        return False
-
-    login_button.click()
-    logger.info("已點擊登入按鈕，等待頁面回應...")
-
-    try:
-        page.wait_for_load_state("networkidle", timeout=15000)
-    except PlaywrightTimeout:
-        pass
-    time.sleep(3)
-
-    take_screenshot(page, "03_after_first_login", debug)
-
-    # -----------------------------------------------------------
-    # 步驟 2: 處理 2FA 驗證碼
-    # ⬇️ 以下 selector 需要根據實際頁面調整 ⬇️
-    # -----------------------------------------------------------
-
-    verification_input_selectors = [
-        'input[name="otp"]',
-        'input[name="verificationCode"]',
-        'input[name="verification_code"]',
-        'input[name="code"]',
-        'input[placeholder*="驗證碼"]',
-        'input[placeholder*="認證碼"]',
-        'input[placeholder*="verification"]',
-        'input[type="tel"]',  # 有些 OTP 欄位用 tel type
-        'input[maxlength="6"]',  # 6 碼輸入框
-        '.otp-input input',
-        '#verificationCode',
-        '#otp',
-    ]
-
-    verification_submit_selectors = [
-        'button[type="submit"]',
-        'button:has-text("確認")',
-        'button:has-text("驗證")',
-        'button:has-text("送出")',
-        'button:has-text("確定")',
-        'button:has-text("Submit")',
-        'button:has-text("Verify")',
-    ]
-
-    # 檢查是否出現驗證碼輸入框
-    verification_input = _find_element(
-            page, verification_input_selectors, "驗證碼輸入框", required=False, debug=debug)
-
-    if verification_input:
-        logger.info("偵測到 2FA 驗證碼頁面，開始從 Gmail 讀取驗證碼...")
-
-        # 檢查 Gmail 設定
-        if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-            logger.error("需要 Gmail 設定來讀取驗證碼！")
-            logger.error("請設定環境變數 GMAIL_ADDRESS 和 GMAIL_APP_PASSWORD")
-            return False
-
-        # 從 Gmail 讀取驗證碼
-        code = wait_and_get_verification_code(submit_timestamp)
-
-        if not code:
-            logger.error("無法取得驗證碼！")
-            take_screenshot(page, "error_no_verification_code", debug)
-            return False
-
-        logger.info(f"取得驗證碼: {code}")
-
-        # 輸入驗證碼
-        # 104 的 OTP 是 6 個獨立的 input 框，輸入完 6 碼後會自動送出
-        verification_input.click()
-        verification_input.fill("")
-        verification_input.type(code, delay=random.randint(80, 200))
+        Flow:
+        1. Enter account and password → Click login
+        2. Verification code input appears on page
+        3. Read verification code from Gmail
+        4. Enter verification code → Complete login
+        """
+        self.logger.info(f"Navigating to login page: {Config.LOGIN_URL}")
+        self.page.goto(Config.LOGIN_URL, wait_until="networkidle", timeout=30000)
         time.sleep(2)
 
-        take_screenshot(page, "04_verification_code_filled", debug)
+        self.take_screenshot("01_login_page")
 
-        # 104 的 OTP 輸入完 6 碼後通常會自動送出
-        # 先等幾秒看頁面是否已經跳轉
-        logger.info("等待 OTP 自動送出...")
-        time.sleep(3)
+        # Step 1: Enter account and password
+        account_selectors = [
+            'input[name="account"]',
+            'input[name="username"]',
+            'input[name="email"]',
+            'input[type="email"]',
+            'input[placeholder*="帳號"]',
+            'input[placeholder*="Email"]',
+            '#account',
+            '#username',
+        ]
 
-        # 檢查頁面是否已經離開 OTP 頁面（自動送出成功）
-        otp_still_visible = False
-        try:
-            otp_check = page.wait_for_selector('input[name="otp"]', timeout=2000)
-            if otp_check and otp_check.is_visible():
-                otp_still_visible = True
-        except PlaywrightTimeout:
-            pass
+        password_selectors = [
+            'input[name="password"]',
+            'input[type="password"]',
+            '#password',
+        ]
 
-        if otp_still_visible:
-            # OTP 沒有自動送出，手動點擊「驗證」按鈕
-            logger.info("OTP 未自動送出，嘗試點擊「驗證」按鈕...")
-            verify_button = _find_element(
-                page,
-                [
-                    'button:has-text("驗證")',     # 截圖中的按鈕文字
-                    'button:has-text("確認")',
-                    'button:has-text("送出")',
-                    'button[type="submit"]',
-                ],
-                "驗證按鈕",
-                required=False,
-            )
-            if verify_button:
-                verify_button.click()
-                logger.info("已點擊「驗證」按鈕")
-            else:
-                page.keyboard.press("Enter")
-                logger.info("嘗試按 Enter 送出驗證碼")
-        else:
-            logger.info("OTP 已自動送出，頁面已跳轉")
+        login_button_selectors = [
+            'button[type="submit"]',
+            'button:has-text("登入")',
+            'input[type="submit"]',
+            'a:has-text("登入")',
+            '.login-btn',
+            '#loginBtn',
+        ]
 
-        # 等待頁面完成載入
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PlaywrightTimeout:
-            pass
-        time.sleep(3)
+        # Find account input
+        account_input = self.find_element(account_selectors, "account input")
+        if not account_input:
+            return False
 
-        take_screenshot(page, "05_after_verification", debug)
-    else:
-        logger.info("未偵測到 2FA 頁面，可能不需要驗證碼或已直接登入成功")
+        # Find password input
+        password_input = self.find_element(password_selectors, "password input")
+        if not password_input:
+            return False
 
-    # -----------------------------------------------------------
-    # 步驟 3: 處理「服務項目」選擇頁面
-    # 根據截圖: 頁面標題「服務項目」，104 企業大師是一個 a.block.py-24 的連結
-    # -----------------------------------------------------------
+        # Enter account and password (simulate human typing speed)
+        account_input.click()
+        account_input.fill("")
+        account_input.type(Config.ACCOUNT, delay=random.randint(50, 150))
+        time.sleep(0.5)
 
-    service_link_selectors = [
-        'a[href="https://pro.104.com.tw/"]',  # 截圖中的精確 href
-        'a.block.py-24',                       # 截圖中的 class
-        '.MultipleProduct__product a',         # 父容器內的連結
-        'a:has(img[src*="104logo_pro"])',       # 包含 104 logo 的連結
-        'a:has-text("企業大師")',
-    ]
+        password_input.click()
+        password_input.fill("")
+        password_input.type(Config.PASSWORD, delay=random.randint(50, 150))
+        time.sleep(0.5)
 
-    service_link = _find_element(
-        page, service_link_selectors, "104 企業大師服務連結", required=False
-    )
+        self.take_screenshot("02_credentials_filled")
 
-    if service_link:
-        logger.info("偵測到服務選擇頁面，點擊「104 企業大師」...")
-        service_link.click()
-        time.sleep(3)
+        # Record submission time (for filtering verification code emails)
+        submit_timestamp = datetime.now() - timedelta(seconds=30)
+
+        # Click login
+        login_button = self.find_element(login_button_selectors, "login button")
+        if not login_button:
+            return False
+
+        login_button.click()
+        self.logger.info("Login button clicked, waiting for page response...")
 
         try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PlaywrightTimeout:
-            pass
-
-        take_screenshot(page, "06_after_service_selection", debug)
-    else:
-        logger.info("未偵測到服務選擇頁面，可能已直接進入主頁")
-
-    # -----------------------------------------------------------
-    # 步驟 4: 點擊「私人秘書」進入 psc2 頁面
-    # 根據截圖: sidebar 中有 div.-major.widget.psc 包含「私人秘書」
-    # -----------------------------------------------------------
-
-    psc_selectors = [
-        'div.-major.widget.psc',           # 截圖中的精確 class
-        'a:has-text("私人秘書")',
-        'div:has-text("私人秘書") >> visible=true',
-        '.widget.psc',
-    ]
-
-    psc_button = _find_element(
-        page, psc_selectors, "私人秘書按鈕", required=False
-    )
-
-    if psc_button:
-        logger.info("找到「私人秘書」，點擊進入...")
-        psc_button.click()
-        time.sleep(3)
-
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except PlaywrightTimeout:
-            pass
-
-        take_screenshot(page, "07_after_psc_click", debug)
-    else:
-        # 可能已經在 psc2 頁面了，嘗試直接導航
-        logger.info("未找到「私人秘書」按鈕，嘗試直接前往 psc2...")
-        try:
-            page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=15000)
+            self.page.wait_for_load_state("networkidle", timeout=15000)
         except PlaywrightTimeout:
             pass
         time.sleep(3)
-        take_screenshot(page, "07_navigate_psc2", debug)
 
-    # -----------------------------------------------------------
-    # 步驟 5: 確認登入成功
-    # -----------------------------------------------------------
+        self.take_screenshot("03_after_first_login")
 
-    current_url = page.url
-    logger.info(f"目前的 URL: {current_url}")
+        # Step 2: Handle 2FA verification code
+        verification_input_selectors = [
+            'input[name="otp"]',
+            'input[name="verificationCode"]',
+            'input[name="verification_code"]',
+            'input[name="code"]',
+            'input[placeholder*="驗證碼"]',
+            'input[placeholder*="認證碼"]',
+            'input[placeholder*="verification"]',
+            'input[type="tel"]',
+            'input[maxlength="6"]',
+            '.otp-input input',
+            '#verificationCode',
+            '#otp',
+        ]
 
-    if "login" in current_url.lower():
-        error_text = page.query_selector(
-            ".error-message, .alert-danger, .error, .text-danger"
+        # Check if verification code input appears
+        verification_input = self.find_element(
+            verification_input_selectors, "verification code input", required=False
         )
-        if error_text:
-            logger.error(f"登入失敗: {error_text.inner_text()}")
-        else:
-            logger.error("登入似乎失敗了（仍在登入頁面）")
-        take_screenshot(page, "error_login_failed", debug)
-        return False
 
-    logger.info("✅ 登入成功！")
-    return True
+        if verification_input:
+            self.logger.info("Detected 2FA verification page, reading code from Gmail...")
 
+            # Check Gmail settings
+            if not Config.GMAIL_ADDRESS or not Config.GMAIL_APP_PASSWORD:
+                self.logger.error("Gmail settings required to read verification code!")
+                self.logger.error("Please set GMAIL_ADDRESS and GMAIL_APP_PASSWORD environment variables")
+                return False
 
-def _find_element(page, selectors: list, name: str, required: bool = True, debug: bool = False):
-    """
-    嘗試多個 selector 找到頁面元素
+            # Read verification code from Gmail
+            code = self.otp_reader.wait_and_fetch(submit_timestamp)
 
-    Args:
-        page: Playwright page
-        selectors: 要嘗試的 selector 列表
-        name: 元素名稱（用於日誌）
-        required: 是否為必要元素（找不到時是否報錯）
+            if not code:
+                self.logger.error("Unable to retrieve verification code!")
+                self.take_screenshot("error_no_verification_code")
+                return False
 
-    Returns:
-        找到的元素，或 None
-    """
-    for selector in selectors:
-        try:
-            element = page.wait_for_selector(selector, timeout=3000)
-            if element and element.is_visible():
-                logger.info(f"找到{name}: {selector}")
-                return element
-        except PlaywrightTimeout:
-            continue
+            self.logger.info(f"Retrieved verification code: {code}")
 
-    if required:
-        logger.error(f"找不到{name}！請檢查 selector 設定。")
-        take_screenshot(page, f"error_no_{name}", debug)
-    return None
+            # Enter verification code
+            verification_input.click()
+            verification_input.fill("")
+            verification_input.type(code, delay=random.randint(80, 200))
+            time.sleep(2)
 
+            self.take_screenshot("04_verification_code_filled")
 
-def punch(page, action: str, debug: bool = False) -> bool:
-    """
-    執行打卡動作
+            # 104's OTP usually auto-submits after entering 6 digits
+            self.logger.info("Waiting for OTP auto-submit...")
+            time.sleep(3)
 
-    根據截圖，打卡頁面結構:
-    - 打卡區塊: div.PSC-HomeWidget.clockIn
-    - 標題: h3.ico.ico-m4 "網路打卡"
-    - 打卡按鈕: span.btn.btn-lg.btn-block "打卡"
-    - 上班模式: div.PSC-ClockIn.morning
+            # Check if page has left OTP page (auto-submit successful)
+            otp_still_visible = False
+            try:
+                otp_check = self.page.wait_for_selector('input[name="otp"]', timeout=2000)
+                if otp_check and otp_check.is_visible():
+                    otp_still_visible = True
+            except PlaywrightTimeout:
+                pass
 
-    Args:
-        page: Playwright page object
-        action: "clock_in" (上班打卡) 或 "clock_out" (下班打卡)
-    """
-    action_text = "上班" if action == "clock_in" else "下班"
-
-    # 確認目前在 psc2 頁面（登入流程最後應該已經導航到這裡）
-    current_url = page.url
-    if "psc2" not in current_url:
-        logger.info("目前不在 psc2 頁面，嘗試導航...")
-        try:
-            page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=30000)
-        except PlaywrightTimeout:
-            logger.warning("psc2 頁面載入超時，嘗試繼續...")
-        time.sleep(3)
-
-    take_screenshot(page, f"08_punch_page_{action}", debug)
-
-    # -----------------------------------------------------------
-    # 找到打卡按鈕
-    # 根據截圖: span.btn.btn-lg.btn-block 文字為「打卡」
-    # 位於 div.PSC-HomeWidget.clockIn 區塊內
-    # -----------------------------------------------------------
-
-    punch_selectors = [
-        'span.btn.btn-lg.btn-block',                        # 截圖中的精確 selector
-        '.PSC-HomeWidget.clockIn span.btn',                  # 在打卡區塊內找按鈕
-        '.PSC-HomeWidget span.btn-block',                    # 備用
-        'span.btn-block:has-text("打卡")',                   # 用文字 + class
-        '.PSC-ClockIn-root span.btn',                        # ClockIn root 內的按鈕
-        'span:has-text("打卡")',                              # 最後手段: 純文字
-    ]
-
-    punch_button = _find_element(page, punch_selectors, "打卡按鈕", debug=debug)
-
-    if not punch_button:
-        logger.error("找不到打卡按鈕！")
-        take_screenshot(page, "error_no_punch_button", debug)
-        return False
-
-    punch_button.click()
-    logger.info(f"已點擊打卡按鈕 ({action_text})")
-
-    time.sleep(3)
-    take_screenshot(page, f"09_after_punch_click_{action}", debug)
-
-    # -----------------------------------------------------------
-    # 等待「打卡成功」popup
-    # -----------------------------------------------------------
-
-    success_selectors = [
-        'text="打卡成功"',
-        ':has-text("打卡成功")',
-        '.modal:has-text("打卡成功")',
-        '.popup:has-text("打卡成功")',
-        '.alert:has-text("打卡成功")',
-        '.swal2-popup:has-text("打卡成功")',        # SweetAlert2
-        '.toast:has-text("打卡成功")',
-    ]
-
-    for selector in success_selectors:
-        try:
-            element = page.wait_for_selector(selector, timeout=5000)
-            if element:
-                logger.info(f"✅ {action_text}打卡成功！")
-                take_screenshot(page, f"10_punch_success_{action}", debug)
-
-                # 關閉 popup（如果有確認按鈕）
-                try:
-                    close_btn = page.wait_for_selector(
-                        'button:has-text("確認"), button:has-text("確定"), '
-                        'button:has-text("OK"), .swal2-confirm',
-                        timeout=3000,
-                    )
-                    if close_btn and close_btn.is_visible():
-                        close_btn.click()
-                except PlaywrightTimeout:
-                    pass
-
-                return True
-        except PlaywrightTimeout:
-            continue
-
-    logger.warning("未找到「打卡成功」訊息，請檢查截圖確認結果")
-    take_screenshot(page, f"10_punch_result_unknown_{action}", debug)
-    return True
-
-
-def run(action: str, skip_weekday: bool = False, debug: bool = False):
-    """
-    主要執行流程
-    """
-    # 驗證必要環境變數
-    if not ACCOUNT or not PASSWORD:
-        logger.error("請設定環境變數 PRO104_ACCOUNT 和 PRO104_PASSWORD")
-        sys.exit(1)
-
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        logger.warning("⚠️  未設定 Gmail 環境變數 (GMAIL_ADDRESS, GMAIL_APP_PASSWORD)")
-        logger.warning("   如果 104 需要 2FA 驗證碼，將無法自動讀取！")
-
-    # 檢查是否為工作日
-    if not skip_weekday and not is_weekday():
-        logger.info("今天不是工作日，跳過打卡。")
-        return
-
-    # 加入隨機延遲
-    random_delay()
-
-    action_text = "上班打卡" if action == "clock_in" else "下班打卡"
-    logger.info(f"===== 開始 {action_text} =====")
-    logger.info(f"時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        logger.info(f"第 {attempt}/{MAX_RETRIES} 次嘗試")
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
+            if otp_still_visible:
+                # OTP not auto-submitted, manually click verify button
+                self.logger.info("OTP not auto-submitted, trying to click verify button...")
+                verify_button = self.find_element(
+                    [
+                        'button:has-text("驗證")',
+                        'button:has-text("確認")',
+                        'button:has-text("送出")',
+                        'button[type="submit"]',
                     ],
+                    "verify button",
+                    required=False,
                 )
-
-                context = browser.new_context(
-                    viewport={"width": 1280, "height": 720},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                    locale="zh-TW",
-                    timezone_id="Asia/Taipei",
-                )
-
-                page = context.new_page()
-
-                # 步驟1: 登入 (含 2FA)
-                if not login(page):
-                    raise Exception("登入失敗")
-
-                # 步驟2: 打卡
-                if not punch(page, action):
-                    raise Exception("打卡失敗")
-
-                # 步驟3: 發送 Telegram 通知
-                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                notification_message = (
-                    f"🎉 <b>104 打卡成功</b>\n\n"
-                    f"📋 類型: {action_text}\n"
-                    f"🕐 時間: {now}\n"
-                    f"✅ 狀態: 成功"
-                )
-                send_telegram_notification(notification_message)
-
-                logger.info(f"===== {action_text}完成 =====")
-                browser.close()
-                return
-
-        except Exception as e:
-            logger.error(f"第 {attempt} 次嘗試失敗: {e}")
-            if attempt < MAX_RETRIES:
-                logger.info(f"等待 {RETRY_INTERVAL} 秒後重試...")
-                time.sleep(RETRY_INTERVAL)
+                if verify_button:
+                    verify_button.click()
+                    self.logger.info("Verify button clicked")
+                else:
+                    self.page.keyboard.press("Enter")
+                    self.logger.info("Attempting to submit verification code with Enter key")
             else:
-                logger.error(
-                    f"已達最大重試次數 ({MAX_RETRIES})，{action_text}失敗！"
-                )
-                sys.exit(1)
+                self.logger.info("OTP auto-submitted, page has redirected")
 
+            # Wait for page to finish loading
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except PlaywrightTimeout:
+                pass
+            time.sleep(3)
 
-# ============================================================
-# 程式進入點
-# ============================================================
+            self.take_screenshot("05_after_verification")
+        else:
+            self.logger.info("No 2FA page detected, may not need verification code or already logged in")
+
+        # Step 3: Handle "Service Selection" page
+        service_link_selectors = [
+            'a[href="https://pro.104.com.tw/"]',
+            'a.block.py-24',
+            '.MultipleProduct__product a',
+            'a:has(img[src*="104logo_pro"])',
+            'a:has-text("企業大師")',
+        ]
+
+        service_link = self.find_element(
+            service_link_selectors, "104 Pro service link", required=False
+        )
+
+        if service_link:
+            self.logger.info("Detected service selection page, clicking '104 Pro'...")
+            service_link.click()
+            time.sleep(3)
+
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except PlaywrightTimeout:
+                pass
+
+            self.take_screenshot("06_after_service_selection")
+        else:
+            self.logger.info("No service selection page detected, may already be on main page")
+
+        # Step 4: Click "Private Secretary" to enter psc2 page
+        psc_selectors = [
+            'div.-major.widget.psc',
+            'a:has-text("私人秘書")',
+            'div:has-text("私人秘書") >> visible=true',
+            '.widget.psc',
+        ]
+
+        psc_button = self.find_element(psc_selectors, "Private Secretary button", required=False)
+
+        if psc_button:
+            self.logger.info("Found 'Private Secretary', clicking to enter...")
+            psc_button.click()
+            time.sleep(3)
+
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=15000)
+            except PlaywrightTimeout:
+                pass
+
+            self.take_screenshot("07_after_psc_click")
+        else:
+            # May already be on psc2 page, try direct navigation
+            self.logger.info("Private Secretary button not found, attempting direct navigation to psc2...")
+            try:
+                self.page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=15000)
+            except PlaywrightTimeout:
+                pass
+            time.sleep(3)
+            self.take_screenshot("07_navigate_psc2")
+
+        # Step 5: Confirm successful login
+        current_url = self.page.url
+        self.logger.info(f"Current URL: {current_url}")
+
+        if "login" in current_url.lower():
+            error_text = self.page.query_selector(
+                ".error-message, .alert-danger, .error, .text-danger"
+            )
+            if error_text:
+                self.logger.error(f"Login failed: {error_text.inner_text()}")
+            else:
+                self.logger.error("Login seems to have failed (still on login page)")
+            self.take_screenshot("error_login_failed")
+            return False
+
+        self.logger.info("✅ Login successful!")
+        return True
+
+    def punch(self, action: str) -> bool:
+        """
+        Execute clock-in/out action
+
+        Args:
+            action: "clock_in" (start of work) or "clock_out" (end of work)
+        """
+        action_text = "Clock In" if action == "clock_in" else "Clock Out"
+
+        # Confirm currently on psc2 page
+        current_url = self.page.url
+        if "psc2" not in current_url:
+            self.logger.info("Not currently on psc2 page, attempting navigation...")
+            try:
+                self.page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=30000)
+            except PlaywrightTimeout:
+                self.logger.warning("psc2 page load timeout, attempting to continue...")
+            time.sleep(3)
+
+        self.take_screenshot(f"08_punch_page_{action}")
+
+        # Find punch button
+        punch_selectors = [
+            'span.btn.btn-lg.btn-block',
+            '.PSC-HomeWidget.clockIn span.btn',
+            '.PSC-HomeWidget span.btn-block',
+            'span.btn-block:has-text("打卡")',
+            '.PSC-ClockIn-root span.btn',
+            'span:has-text("打卡")',
+        ]
+
+        punch_button = self.find_element(punch_selectors, "punch button")
+
+        if not punch_button:
+            self.logger.error("Cannot find punch button!")
+            self.take_screenshot("error_no_punch_button")
+            return False
+
+        punch_button.click()
+        self.logger.info(f"Punch button clicked ({action_text})")
+
+        time.sleep(3)
+        self.take_screenshot(f"09_after_punch_click_{action}")
+
+        # Wait for "Punch Success" popup
+        success_selectors = [
+            'text="打卡成功"',
+            ':has-text("打卡成功")',
+            '.modal:has-text("打卡成功")',
+            '.popup:has-text("打卡成功")',
+            '.alert:has-text("打卡成功")',
+            '.swal2-popup:has-text("打卡成功")',
+            '.toast:has-text("打卡成功")',
+        ]
+
+        for selector in success_selectors:
+            try:
+                element = self.page.wait_for_selector(selector, timeout=5000)
+                if element:
+                    self.logger.info(f"✅ {action_text} successful!")
+                    self.take_screenshot(f"10_punch_success_{action}")
+
+                    # Close popup (if there's a confirm button)
+                    try:
+                        close_btn = self.page.wait_for_selector(
+                            'button:has-text("確認"), button:has-text("確定"), '
+                            'button:has-text("OK"), .swal2-confirm',
+                            timeout=3000,
+                        )
+                        if close_btn and close_btn.is_visible():
+                            close_btn.click()
+                    except PlaywrightTimeout:
+                        pass
+
+                    return True
+            except PlaywrightTimeout:
+                continue
+
+        self.logger.warning("'Punch Success' message not found, please check screenshot to confirm result")
+        self.take_screenshot(f"10_punch_result_unknown_{action}")
+        return True
+
+    def run(self, action: str, skip_weekday_check: bool = False):
+        """
+        Main execution flow
+
+        Args:
+            action: "clock_in" or "clock_out"
+            skip_weekday_check: Skip weekday check (for testing)
+        """
+        # Validate required environment variables
+        if not Config.validate():
+            self.logger.error("Please set PRO104_ACCOUNT and PRO104_PASSWORD environment variables")
+            sys.exit(1)
+
+        if not Config.GMAIL_ADDRESS or not Config.GMAIL_APP_PASSWORD:
+            self.logger.warning("⚠️  Gmail environment variables not set (GMAIL_ADDRESS, GMAIL_APP_PASSWORD)")
+            self.logger.warning("   If 104 requires 2FA verification code, it cannot be automatically retrieved!")
+
+        # Check if it's a weekday
+        if not skip_weekday_check and not self.is_weekday():
+            self.logger.info("Today is not a weekday, skipping clock-in.")
+            return
+
+        # Add random delay
+        self.random_delay()
+
+        action_text = "Clock In" if action == "clock_in" else "Clock Out"
+        self.logger.info(f"===== Starting {action_text} =====")
+        self.logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        for attempt in range(1, Config.MAX_RETRIES + 1):
+            self.logger.info(f"Attempt {attempt}/{Config.MAX_RETRIES}")
+
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                        ],
+                    )
+
+                    context = browser.new_context(
+                        viewport={"width": 1280, "height": 720},
+                        user_agent=(
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                        locale="zh-TW",
+                        timezone_id="Asia/Taipei",
+                    )
+
+                    self.page = context.new_page()
+
+                    # Step 1: Login (including 2FA)
+                    if not self.login():
+                        raise Exception("Login failed")
+
+                    # Step 2: Punch
+                    if not self.punch(action):
+                        raise Exception("Punch failed")
+
+                    # Step 3: Send Telegram notification
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    notification_message = (
+                        f"🎉 <b>104 Clock-In Successful</b>\n\n"
+                        f"📋 Type: {action_text}\n"
+                        f"🕐 Time: {now}\n"
+                        f"✅ Status: Success"
+                    )
+                    self.notifier.send(notification_message)
+
+                    self.logger.info(f"===== {action_text} Completed =====")
+                    browser.close()
+                    return
+
+            except Exception as e:
+                self.logger.error(f"Attempt {attempt} failed: {e}")
+                if attempt < Config.MAX_RETRIES:
+                    self.logger.info(f"Waiting {Config.RETRY_INTERVAL}s before retry...")
+                    time.sleep(Config.RETRY_INTERVAL)
+                else:
+                    self.logger.error(
+                        f"Max retries reached ({Config.MAX_RETRIES}), {action_text} failed!"
+                    )
+                    sys.exit(1)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="104 企業大師自動打卡腳本 (含 2FA)")
+    """Program entry point"""
+    parser = argparse.ArgumentParser(description="104 Pro Automatic Clock-In Script (with 2FA)")
     parser.add_argument(
         "--action",
         choices=["clock_in", "clock_out"],
         required=True,
-        help="打卡動作: clock_in (上班) 或 clock_out (下班)",
+        help="Clock action: clock_in (start) or clock_out (end)",
     )
     parser.add_argument(
         "--no-delay",
         action="store_true",
-        help="跳過隨機延遲（測試用）",
+        help="Skip random delay (for testing)",
     )
     parser.add_argument(
         "--skip-weekday-check",
         action="store_true",
-        help="跳過工作日檢查（測試用）",
+        help="Skip weekday check (for testing)",
     )
     parser.add_argument(
         "--test-gmail",
         action="store_true",
-        help="只測試 Gmail 連線和讀取驗證碼（不執行打卡）",
+        help="Only test Gmail connection and verification code retrieval (no clock-in)",
     )
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="啟用除錯模式（會保存截圖）",
+        help="Enable debug mode (saves screenshots)",
     )
 
     args = parser.parse_args()
 
-    # 測試 Gmail 模式
+    # Initialize logger
+    logger = Logger()
+
+    # Test Gmail mode
     if args.test_gmail:
-        logger.info("===== 測試 Gmail 連線 =====")
-        if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-            logger.error("請設定 GMAIL_ADDRESS 和 GMAIL_APP_PASSWORD")
+        logger.info("===== Testing Gmail Connection =====")
+        if not Config.GMAIL_ADDRESS or not Config.GMAIL_APP_PASSWORD:
+            logger.error("Please set GMAIL_ADDRESS and GMAIL_APP_PASSWORD")
             sys.exit(1)
-        # 搜尋最近 10 分鐘的信件
+
+        otp_reader = GmailOTPReader(logger)
+        # Search for emails from the last 10 minutes
         after = datetime.now() - timedelta(minutes=10)
-        code = fetch_verification_code_from_gmail(after)
+        code = otp_reader.fetch_verification_code(after)
         if code:
-            logger.info(f"找到驗證碼: {code}")
+            logger.info(f"Found verification code: {code}")
         else:
-            logger.info("最近 10 分鐘內沒有找到 104 的驗證碼信件")
-        logger.info("Gmail 連線測試完成")
+            logger.info("No 104 verification code email found in the last 10 minutes")
+        logger.info("Gmail connection test completed")
         return
 
-    # 覆蓋隨機延遲設定
+    # Override random delay settings
     if args.no_delay:
-        global RANDOM_DELAY_MIN, RANDOM_DELAY_MAX
-        RANDOM_DELAY_MIN = 0
-        RANDOM_DELAY_MAX = 0
+        Config.RANDOM_DELAY_MIN = 0
+        Config.RANDOM_DELAY_MAX = 0
 
-    run(args.action, skip_weekday=args.skip_weekday_check)
+    # Run clock-in bot
+    bot = Pro104ClockIn(logger, debug=args.debug)
+    bot.run(args.action, skip_weekday_check=args.skip_weekday_check)
 
 
 if __name__ == "__main__":
