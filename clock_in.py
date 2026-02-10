@@ -518,8 +518,37 @@ def login(page) -> bool:
             logger.info("已送出驗證碼，等待驗證...")
         else:
             # 有些頁面輸入完會自動送出，或按 Enter 即可
-            verification_input.press("Enter")
-            logger.info("嘗試按 Enter 送出驗證碼...")
+            try:
+                # 重新取得驗證碼輸入框（避免 DOM 分離問題）
+                verification_input_selectors = [
+                    'input[name="otp"]',
+                    'input[placeholder*="驗證碼"]',
+                    'input[id*="otp"]',
+                    'input[id*="verification"]',
+                    'input[type="tel"]'
+                ]
+                fresh_verification_input = _find_element(
+                    page, verification_input_selectors, "驗證碼輸入框"
+                )
+                if fresh_verification_input:
+                    fresh_verification_input.press("Enter")
+                    logger.info("嘗試按 Enter 送出驗證碼...")
+                else:
+                    # 如果輸入框也找不到，嘗試通用的 Enter 按鍵
+                    page.keyboard.press("Enter")
+                    logger.info("使用全域 Enter 送出驗證碼...")
+            except Exception as e:
+                logger.warning(f"按 Enter 失敗: {e}，嘗試其他提交方式...")
+                # 嘗試點擊任何可能的提交按鈕
+                submit_buttons = page.locator('button[type="submit"], input[type="submit"]').all()
+                for btn in submit_buttons:
+                    try:
+                        if btn.is_visible():
+                            btn.click()
+                            logger.info("找到並點擊了提交按鈕")
+                            break
+                    except:
+                        continue
 
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
@@ -532,7 +561,74 @@ def login(page) -> bool:
         logger.info("未偵測到 2FA 頁面，可能不需要驗證碼或已直接登入成功")
 
     # -----------------------------------------------------------
-    # 步驟 3: 確認登入成功
+    # 步驟 3: 處理「服務項目」選擇頁面
+    # 根據截圖: 頁面標題「服務項目」，104 企業大師是一個 a.block.py-24 的連結
+    # -----------------------------------------------------------
+
+    service_link_selectors = [
+        'a.block.py-24',                  # 截圖中的精確 class
+        'a.block',                         # 備用: 只用 block class
+        'a:has-text("企業大師")',           # 備用: 用文字找
+        'a:has-text("104企業大師")',
+    ]
+
+    service_link = _find_element(
+        page, service_link_selectors, "104 企業大師服務連結", required=False
+    )
+
+    if service_link:
+        logger.info("偵測到服務選擇頁面，點擊「104 企業大師」...")
+        service_link.click()
+        time.sleep(3)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+
+        take_screenshot(page, "06_after_service_selection")
+    else:
+        logger.info("未偵測到服務選擇頁面，可能已直接進入主頁")
+
+    # -----------------------------------------------------------
+    # 步驟 4: 點擊「私人秘書」進入 psc2 頁面
+    # 根據截圖: sidebar 中有 div.-major.widget.psc 包含「私人秘書」
+    # -----------------------------------------------------------
+
+    psc_selectors = [
+        'div.-major.widget.psc',           # 截圖中的精確 class
+        'a:has-text("私人秘書")',
+        'div:has-text("私人秘書") >> visible=true',
+        '.widget.psc',
+    ]
+
+    psc_button = _find_element(
+        page, psc_selectors, "私人秘書按鈕", required=False
+    )
+
+    if psc_button:
+        logger.info("找到「私人秘書」，點擊進入...")
+        psc_button.click()
+        time.sleep(3)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+
+        take_screenshot(page, "07_after_psc_click")
+    else:
+        # 可能已經在 psc2 頁面了，嘗試直接導航
+        logger.info("未找到「私人秘書」按鈕，嘗試直接前往 psc2...")
+        try:
+            page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=15000)
+        except PlaywrightTimeout:
+            pass
+        time.sleep(3)
+        take_screenshot(page, "07_navigate_psc2")
+
+    # -----------------------------------------------------------
+    # 步驟 5: 確認登入成功
     # -----------------------------------------------------------
 
     current_url = page.url
@@ -585,93 +681,97 @@ def punch(page, action: str) -> bool:
     """
     執行打卡動作
 
+    根據截圖，打卡頁面結構:
+    - 打卡區塊: div.PSC-HomeWidget.clockIn
+    - 標題: h3.ico.ico-m4 "網路打卡"
+    - 打卡按鈕: span.btn.btn-lg.btn-block "打卡"
+    - 上班模式: div.PSC-ClockIn.morning
+
     Args:
         page: Playwright page object
         action: "clock_in" (上班打卡) 或 "clock_out" (下班打卡)
     """
-    logger.info(f"正在前往打卡頁面: {CLOCK_URL}")
+    action_text = "上班" if action == "clock_in" else "下班"
 
-    try:
-        page.goto(CLOCK_URL, wait_until="networkidle", timeout=30000)
-    except PlaywrightTimeout:
-        logger.warning("打卡頁面載入超時，嘗試繼續...")
+    # 確認目前在 psc2 頁面（登入流程最後應該已經導航到這裡）
+    current_url = page.url
+    if "psc2" not in current_url:
+        logger.info("目前不在 psc2 頁面，嘗試導航...")
+        try:
+            page.goto("https://pro.104.com.tw/psc2", wait_until="networkidle", timeout=30000)
+        except PlaywrightTimeout:
+            logger.warning("psc2 頁面載入超時，嘗試繼續...")
+        time.sleep(3)
 
-    time.sleep(3)
-    take_screenshot(page, f"06_punch_page_{action}")
+    take_screenshot(page, f"08_punch_page_{action}")
 
     # -----------------------------------------------------------
-    # ⬇️ 以下 selector 需要根據實際頁面調整 ⬇️
+    # 找到打卡按鈕
+    # 根據截圖: span.btn.btn-lg.btn-block 文字為「打卡」
+    # 位於 div.PSC-HomeWidget.clockIn 區塊內
     # -----------------------------------------------------------
 
-    if action == "clock_in":
-        punch_selectors = [
-            'button:has-text("上班打卡")',
-            'button:has-text("上班")',
-            'button:has-text("簽到")',
-            'button:has-text("打卡")',
-            '.clock-in-btn',
-            '#clockInBtn',
-            '[data-action="clock-in"]',
-        ]
-    else:
-        punch_selectors = [
-            'button:has-text("下班打卡")',
-            'button:has-text("下班")',
-            'button:has-text("簽退")',
-            '.clock-out-btn',
-            '#clockOutBtn',
-            '[data-action="clock-out"]',
-        ]
+    punch_selectors = [
+        'span.btn.btn-lg.btn-block',                        # 截圖中的精確 selector
+        '.PSC-HomeWidget.clockIn span.btn',                  # 在打卡區塊內找按鈕
+        '.PSC-HomeWidget span.btn-block',                    # 備用
+        'span.btn-block:has-text("打卡")',                   # 用文字 + class
+        '.PSC-ClockIn-root span.btn',                        # ClockIn root 內的按鈕
+        'span:has-text("打卡")',                              # 最後手段: 純文字
+    ]
 
-    punch_selectors.append('button:has-text("打卡")')
-
-    punch_button = _find_element(
-        page, punch_selectors,
-        f"{'上班' if action == 'clock_in' else '下班'}打卡按鈕"
-    )
+    punch_button = _find_element(page, punch_selectors, "打卡按鈕")
 
     if not punch_button:
+        logger.error("找不到打卡按鈕！")
+        take_screenshot(page, "error_no_punch_button")
         return False
 
     punch_button.click()
-    action_text = "上班" if action == "clock_in" else "下班"
-    logger.info(f"已點擊{action_text}打卡按鈕")
+    logger.info(f"已點擊打卡按鈕 ({action_text})")
 
     time.sleep(3)
+    take_screenshot(page, f"09_after_punch_click_{action}")
 
-    # 處理確認對話框
-    try:
-        confirm_button = page.wait_for_selector(
-            'button:has-text("確認"), button:has-text("確定"), button:has-text("OK")',
-            timeout=5000,
-        )
-        if confirm_button and confirm_button.is_visible():
-            confirm_button.click()
-            logger.info("已確認打卡對話框")
-            time.sleep(2)
-    except PlaywrightTimeout:
-        pass
+    # -----------------------------------------------------------
+    # 等待「打卡成功」popup
+    # -----------------------------------------------------------
 
-    take_screenshot(page, f"07_after_punch_{action}")
-
-    success_indicators = [
+    success_selectors = [
         'text="打卡成功"',
-        'text="簽到成功"',
-        'text="簽退成功"',
-        ".success-message",
-        ".alert-success",
+        ':has-text("打卡成功")',
+        '.modal:has-text("打卡成功")',
+        '.popup:has-text("打卡成功")',
+        '.alert:has-text("打卡成功")',
+        '.swal2-popup:has-text("打卡成功")',        # SweetAlert2
+        '.toast:has-text("打卡成功")',
     ]
 
-    for indicator in success_indicators:
+    for selector in success_selectors:
         try:
-            element = page.wait_for_selector(indicator, timeout=3000)
+            element = page.wait_for_selector(selector, timeout=5000)
             if element:
                 logger.info(f"✅ {action_text}打卡成功！")
+                take_screenshot(page, f"10_punch_success_{action}")
+
+                # 關閉 popup（如果有確認按鈕）
+                try:
+                    close_btn = page.wait_for_selector(
+                        'button:has-text("確認"), button:has-text("確定"), '
+                        'button:has-text("OK"), .swal2-confirm',
+                        timeout=3000,
+                    )
+                    if close_btn and close_btn.is_visible():
+                        close_btn.click()
+                except PlaywrightTimeout:
+                    pass
+
                 return True
         except PlaywrightTimeout:
             continue
 
-    logger.warning("未找到明確的打卡成功訊息，請檢查截圖確認是否成功")
+    logger.warning("未找到「打卡成功」訊息，請檢查截圖確認結果")
+    take_screenshot(page, f"10_punch_result_unknown_{action}")
     return True
 
 
