@@ -122,8 +122,10 @@ def random_delay():
         time.sleep(delay)
 
 
-def take_screenshot(page, name: str):
-    """截圖用於除錯"""
+def take_screenshot(page, name: str, debug: bool = False):
+    """截圖用於除錯（只在 debug 模式下執行）"""
+    if not debug:
+        return
     SCREENSHOT_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = SCREENSHOT_DIR / f"{name}_{timestamp}.png"
@@ -356,7 +358,7 @@ def wait_and_get_verification_code(after_timestamp: datetime) -> str | None:
 # 核心邏輯
 # ============================================================
 
-def login(page) -> bool:
+def login(page, debug: bool = False) -> bool:
     """
     登入 104 企業大師（含 2FA 驗證碼處理）
 
@@ -372,7 +374,7 @@ def login(page) -> bool:
     page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
     time.sleep(2)
 
-    take_screenshot(page, "01_login_page")
+    take_screenshot(page, "01_login_page", debug)
 
     # -----------------------------------------------------------
     # 步驟 1: 輸入帳號密碼
@@ -406,12 +408,12 @@ def login(page) -> bool:
     ]
 
     # 找到帳號輸入框
-    account_input = _find_element(page, account_selectors, "帳號輸入框")
+    account_input = _find_element(page, account_selectors, "帳號輸入框", debug=debug)
     if not account_input:
         return False
 
     # 找到密碼輸入框
-    password_input = _find_element(page, password_selectors, "密碼輸入框")
+    password_input = _find_element(page, password_selectors, "密碼輸入框", debug=debug)
     if not password_input:
         return False
 
@@ -426,13 +428,13 @@ def login(page) -> bool:
     password_input.type(PASSWORD, delay=random.randint(50, 150))
     time.sleep(0.5)
 
-    take_screenshot(page, "02_credentials_filled")
+    take_screenshot(page, "02_credentials_filled", debug)
 
     # 記錄送出時間（用於篩選驗證碼信件）
     submit_timestamp = datetime.now() - timedelta(seconds=30)
 
     # 點擊登入
-    login_button = _find_element(page, login_button_selectors, "登入按鈕")
+    login_button = _find_element(page, login_button_selectors, "登入按鈕", debug=debug)
     if not login_button:
         return False
 
@@ -445,7 +447,7 @@ def login(page) -> bool:
         pass
     time.sleep(3)
 
-    take_screenshot(page, "03_after_first_login")
+    take_screenshot(page, "03_after_first_login", debug)
 
     # -----------------------------------------------------------
     # 步驟 2: 處理 2FA 驗證碼
@@ -453,9 +455,9 @@ def login(page) -> bool:
     # -----------------------------------------------------------
 
     verification_input_selectors = [
+        'input[name="otp"]',
         'input[name="verificationCode"]',
         'input[name="verification_code"]',
-        'input[name="otp"]',
         'input[name="code"]',
         'input[placeholder*="驗證碼"]',
         'input[placeholder*="認證碼"]',
@@ -479,8 +481,7 @@ def login(page) -> bool:
 
     # 檢查是否出現驗證碼輸入框
     verification_input = _find_element(
-        page, verification_input_selectors, "驗證碼輸入框", required=False
-    )
+            page, verification_input_selectors, "驗證碼輸入框", required=False, debug=debug)
 
     if verification_input:
         logger.info("偵測到 2FA 驗證碼頁面，開始從 Gmail 讀取驗證碼...")
@@ -496,7 +497,7 @@ def login(page) -> bool:
 
         if not code:
             logger.error("無法取得驗證碼！")
-            take_screenshot(page, "error_no_verification_code")
+            take_screenshot(page, "error_no_verification_code", debug)
             return False
 
         logger.info(f"取得驗證碼: {code}")
@@ -508,7 +509,7 @@ def login(page) -> bool:
         verification_input.type(code, delay=random.randint(80, 200))
         time.sleep(2)
 
-        take_screenshot(page, "04_verification_code_filled")
+        take_screenshot(page, "04_verification_code_filled", debug)
 
         # 104 的 OTP 輸入完 6 碼後通常會自動送出
         # 先等幾秒看頁面是否已經跳轉
@@ -554,7 +555,7 @@ def login(page) -> bool:
             pass
         time.sleep(3)
 
-        take_screenshot(page, "05_after_verification")
+        take_screenshot(page, "05_after_verification", debug)
     else:
         logger.info("未偵測到 2FA 頁面，可能不需要驗證碼或已直接登入成功")
 
@@ -585,7 +586,7 @@ def login(page) -> bool:
         except PlaywrightTimeout:
             pass
 
-        take_screenshot(page, "06_after_service_selection")
+        take_screenshot(page, "06_after_service_selection", debug)
     else:
         logger.info("未偵測到服務選擇頁面，可能已直接進入主頁")
 
@@ -615,7 +616,7 @@ def login(page) -> bool:
         except PlaywrightTimeout:
             pass
 
-        take_screenshot(page, "07_after_psc_click")
+        take_screenshot(page, "07_after_psc_click", debug)
     else:
         # 可能已經在 psc2 頁面了，嘗試直接導航
         logger.info("未找到「私人秘書」按鈕，嘗試直接前往 psc2...")
@@ -624,7 +625,7 @@ def login(page) -> bool:
         except PlaywrightTimeout:
             pass
         time.sleep(3)
-        take_screenshot(page, "07_navigate_psc2")
+        take_screenshot(page, "07_navigate_psc2", debug)
 
     # -----------------------------------------------------------
     # 步驟 5: 確認登入成功
@@ -641,14 +642,14 @@ def login(page) -> bool:
             logger.error(f"登入失敗: {error_text.inner_text()}")
         else:
             logger.error("登入似乎失敗了（仍在登入頁面）")
-        take_screenshot(page, "error_login_failed")
+        take_screenshot(page, "error_login_failed", debug)
         return False
 
     logger.info("✅ 登入成功！")
     return True
 
 
-def _find_element(page, selectors: list, name: str, required: bool = True):
+def _find_element(page, selectors: list, name: str, required: bool = True, debug: bool = False):
     """
     嘗試多個 selector 找到頁面元素
 
@@ -672,11 +673,11 @@ def _find_element(page, selectors: list, name: str, required: bool = True):
 
     if required:
         logger.error(f"找不到{name}！請檢查 selector 設定。")
-        take_screenshot(page, f"error_no_{name}")
+        take_screenshot(page, f"error_no_{name}", debug)
     return None
 
 
-def punch(page, action: str) -> bool:
+def punch(page, action: str, debug: bool = False) -> bool:
     """
     執行打卡動作
 
@@ -702,7 +703,7 @@ def punch(page, action: str) -> bool:
             logger.warning("psc2 頁面載入超時，嘗試繼續...")
         time.sleep(3)
 
-    take_screenshot(page, f"08_punch_page_{action}")
+    take_screenshot(page, f"08_punch_page_{action}", debug)
 
     # -----------------------------------------------------------
     # 找到打卡按鈕
@@ -719,18 +720,18 @@ def punch(page, action: str) -> bool:
         'span:has-text("打卡")',                              # 最後手段: 純文字
     ]
 
-    punch_button = _find_element(page, punch_selectors, "打卡按鈕")
+    punch_button = _find_element(page, punch_selectors, "打卡按鈕", debug=debug)
 
     if not punch_button:
         logger.error("找不到打卡按鈕！")
-        take_screenshot(page, "error_no_punch_button")
+        take_screenshot(page, "error_no_punch_button", debug)
         return False
 
     punch_button.click()
     logger.info(f"已點擊打卡按鈕 ({action_text})")
 
     time.sleep(3)
-    take_screenshot(page, f"09_after_punch_click_{action}")
+    take_screenshot(page, f"09_after_punch_click_{action}", debug)
 
     # -----------------------------------------------------------
     # 等待「打卡成功」popup
@@ -751,7 +752,7 @@ def punch(page, action: str) -> bool:
             element = page.wait_for_selector(selector, timeout=5000)
             if element:
                 logger.info(f"✅ {action_text}打卡成功！")
-                take_screenshot(page, f"10_punch_success_{action}")
+                take_screenshot(page, f"10_punch_success_{action}", debug)
 
                 # 關閉 popup（如果有確認按鈕）
                 try:
@@ -770,11 +771,11 @@ def punch(page, action: str) -> bool:
             continue
 
     logger.warning("未找到「打卡成功」訊息，請檢查截圖確認結果")
-    take_screenshot(page, f"10_punch_result_unknown_{action}")
+    take_screenshot(page, f"10_punch_result_unknown_{action}", debug)
     return True
 
 
-def run(action: str, skip_weekday: bool = False):
+def run(action: str, skip_weekday: bool = False, debug: bool = False):
     """
     主要執行流程
     """
@@ -877,6 +878,11 @@ def main():
         "--test-gmail",
         action="store_true",
         help="只測試 Gmail 連線和讀取驗證碼（不執行打卡）",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="啟用除錯模式（會保存截圖）",
     )
 
     args = parser.parse_args()
