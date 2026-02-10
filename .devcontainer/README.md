@@ -1,39 +1,39 @@
 # Development Container README
 
-## 包含的功能
+## Included Features
 
-### Python 环境
+### Python Environment
 - Python 3.11
-- pip 包管理器
-- 基于 Debian Bullseye
+- pip package manager
+- Based on Debian Bullseye
 
-### Playwright 支持
-- 自动安装 Playwright
-- 包含 Chromium, Firefox, WebKit 浏览器
-- 所需的系统依赖库
+### Playwright Support
+- Playwright auto-installed
+- Includes Chromium, Firefox, and WebKit browsers
+- Required system dependency libraries
 
-### VS Code 扩展
-- Python 官方扩展
-- Pylint 代码检查
-- Black 代码格式化
-- Jupyter Notebook 支持
+### VS Code Extensions
+- Python official extension
+- Pylint code linting
+- Black code formatting
+- Jupyter Notebook support
 
-### 开发工具
-- Zsh shell 配置
-- Oh My Zsh 框架
-- 常用开发工具
+### Development Tools
+- Zsh shell configuration
+- Oh My Zsh framework
+- Common development utilities
 
-## 使用方法
+## Usage
 
-1. 确保已安装 Docker 和 VS Code Dev Containers 扩展
-2. 在 VS Code 中打开项目
-3. 按 `Cmd+Shift+P` (macOS) 或 `Ctrl+Shift+P` (Windows/Linux)
-4. 选择 "Dev Containers: Reopen in Container"
-5. 等待容器构建和配置完成
+1. Make sure Docker and the VS Code Dev Containers extension are installed
+2. Open the project in VS Code
+3. Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Windows/Linux)
+4. Select "Dev Containers: Reopen in Container"
+5. Wait for the container to build and configure
 
-## 环境变量
+## Environment Variables
 
-记得在 .env 文件中设置必要的环境变量：
+Remember to set the required environment variables in your .env file:
 
 ```env
 PRO104_ACCOUNT=your_account
@@ -44,9 +44,9 @@ RANDOM_DELAY_MIN=0
 RANDOM_DELAY_MAX=300
 ```
 
-## 测试
+## Testing
 
-容器启动后，你可以测试 Playwright 是否正常工作：
+After the container starts, you can test if Playwright is working properly:
 
 ```bash
 python3 clock_in.py --test-gmail

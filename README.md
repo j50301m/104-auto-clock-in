@@ -1,94 +1,90 @@
-# 104 企業大師自動打卡腳本
+# 104 Pro Auto Clock-In Script
 
-使用 Python + Playwright 自動化 [pro.104.com.tw](https://pro.104.com.tw) 的上下班打卡流程，支援 Gmail 2FA 驗證碼自動讀取。
+Automates the clock-in/out process on [pro.104.com.tw](https://pro.104.com.tw) using Python + Playwright, with support for automatic Gmail 2FA verification code retrieval.
 
 ---
 
-## 快速開始
+## Quick Start
 
-### 1. 安裝依賴
+### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. 設定帳號密碼 + Gmail
+### 2. Configure Account & Gmail
 
 ```bash
 cp .env.example .env
-# 編輯 .env 填入你的 104 帳號密碼和 Gmail 應用程式密碼
+# Edit .env and fill in your 104 account credentials and Gmail app password
 ```
 
-### 3. 取得 Gmail 應用程式密碼
+### 3. Get a Gmail App Password
 
-腳本需要透過 IMAP 讀取 Gmail 裡的 2FA 驗證碼，所以需要一組「應用程式密碼」：
+The script needs to read 2FA verification codes from Gmail via IMAP, so you need an "App Password":
 
-1. 前往 [Google 帳戶安全性](https://myaccount.google.com/security)
-2. 確認已開啟「兩步驟驗證」
-3. 在搜尋欄輸入「應用程式密碼」(App Passwords)
-4. 建立一組新的應用程式密碼（名稱填 "104打卡" 即可）
-5. 把產生的 16 碼密碼貼到 `.env` 的 `GMAIL_APP_PASSWORD`
+1. Go to [Google Account Security](https://myaccount.google.com/security)
+2. Make sure "2-Step Verification" is enabled
+3. Search for "App Passwords" in the search bar
+4. Create a new app password (you can name it "104-clockin")
+5. Paste the generated 16-character password into `GMAIL_APP_PASSWORD` in your `.env` file
 
-### 4. 測試 Gmail 連線
+### 4. Test Gmail Connection
 
-先確認腳本能正常讀取你的 Gmail：
+Verify that the script can read your Gmail:
 
 ```bash
 export $(grep -v '^#' .env | xargs)
 python clock_in.py --test-gmail
 ```
 
-### 5. 首次測試打卡（需要調整 selector）
+### 5. First Clock-In Test (may need selector adjustments)
 
 ```bash
 python clock_in.py --action clock_in --no-delay --skip-weekday-check
 ```
 
-執行後檢查 `screenshots/` 資料夾裡的截圖，確認每一步是否正確。
+After running, check the screenshots in the `screenshots/` folder to confirm each step worked correctly.
 
-### 6. 調整 Selector
+### 6. Adjust Selectors
 
-打開 `clock_in.py`，找到以下標記處進行調整：
+Open `clock_in.py` and look for the selector sections that may need adjustment.
 
-```
-# ⬇️ 以下 selector 需要根據實際頁面調整 ⬇️
-```
+**How to find the correct selectors:**
 
-**如何找到正確的 selector：**
+1. Open https://pro.104.com.tw in Chrome
+2. Press F12 to open DevTools
+3. Use the element picker (Ctrl+Shift+C) to click on input fields and buttons
+4. Note the element's id, name, class, and other attributes
+5. Update the selectors in the script
 
-1. 用 Chrome 打開 https://pro.104.com.tw
-2. 按 F12 開啟 DevTools
-3. 用選取工具 (Ctrl+Shift+C) 點擊各個輸入框和按鈕
-4. 記下元素的 id、name、class 等屬性
-5. 更新腳本中的 selector
-
-需要調整的地方有三處：登入表單、2FA 驗證碼輸入框、打卡按鈕。
+There are three areas that may need adjustment: the login form, the 2FA verification code input, and the punch button.
 
 ---
 
-## 自動打卡流程
+## Auto Clock-In Flow
 
 ```
-1. 開啟 headless 瀏覽器
-2. 前往 104 企業大師登入頁
-3. 輸入帳號密碼 → 點擊登入
-4. 偵測到 2FA 驗證碼頁面
-5. 連接 Gmail IMAP → 搜尋來自 104 的最新信件
-6. 從信件中提取驗證碼（輪詢最多 60 秒）
-7. 輸入驗證碼 → 完成登入
-8. 前往打卡頁面 → 點擊上班/下班打卡
-9. 截圖記錄結果
+1. Launch headless browser
+2. Navigate to 104 Pro login page
+3. Enter account credentials → Click login
+4. Detect 2FA verification page
+5. Connect to Gmail IMAP → Search for the latest email from 104
+6. Extract verification code from email (polls for up to 60 seconds)
+7. Enter verification code → Complete login
+8. Navigate to punch page → Click clock-in/clock-out
+9. Take screenshot to record result
 ```
 
 ---
 
-## 雲端部署方案
+## Cloud Deployment Options
 
-### 方案 A：VPS + Cron Job（推薦）
+### Option A: VPS + Cron Job (Recommended)
 
 ```bash
-# 在伺服器上
+# On your server
 git clone <your-repo> 104-auto-clockin
 cd 104-auto-clockin
 
@@ -102,33 +98,33 @@ chmod +x setup_cron.sh
 ./setup_cron.sh
 ```
 
-### 方案 B：Docker + Cron
+### Option B: Docker + Cron
 
 ```bash
 docker build -t 104-clockin .
 
-# 測試
+# Test
 docker run --rm --env-file .env \
   -v $(pwd)/screenshots:/app/screenshots \
   104-clockin --action clock_in --no-delay
 
-# 設定 cron (crontab -e)
+# Set up cron (crontab -e)
 # 50 8 * * 1-5 docker run --rm --env-file /path/to/.env 104-clockin --action clock_in
 # 5 18 * * 1-5 docker run --rm --env-file /path/to/.env 104-clockin --action clock_out
 ```
 
-### 方案 C：GitHub Actions（免費）
+### Option C: GitHub Actions (Free)
 
-在 GitHub repo 中建立 `.github/workflows/clockin.yml`：
+Create `.github/workflows/clockin.yml` in your GitHub repo:
 
 ```yaml
 name: Auto Clock In/Out
 
 on:
   schedule:
-    # UTC 時間，台北時間 -8
-    - cron: '50 0 * * 1-5'   # 上班 08:50
-    - cron: '5 10 * * 1-5'   # 下班 18:05
+    # UTC time, Taipei time is UTC+8
+    - cron: '50 0 * * 1-5'   # Clock in at 08:50
+    - cron: '5 10 * * 1-5'   # Clock out at 18:05
   workflow_dispatch:
     inputs:
       action:
@@ -183,7 +179,7 @@ jobs:
           retention-days: 7
 ```
 
-在 GitHub repo 的 Settings > Secrets 中設定：
+Set the following in your GitHub repo under Settings > Secrets:
 - `PRO104_ACCOUNT`
 - `PRO104_PASSWORD`
 - `GMAIL_ADDRESS`
@@ -191,55 +187,55 @@ jobs:
 
 ---
 
-## 指令參考
+## Command Reference
 
 ```bash
-# 上班打卡
+# Clock in
 python clock_in.py --action clock_in
 
-# 下班打卡
+# Clock out
 python clock_in.py --action clock_out
 
-# 測試模式（無延遲 + 跳過工作日檢查）
+# Test mode (no delay + skip weekday check)
 python clock_in.py --action clock_in --no-delay --skip-weekday-check
 
-# 只測試 Gmail 連線
+# Test Gmail connection only
 python clock_in.py --test-gmail
 ```
 
 ---
 
-## 專案結構
+## Project Structure
 
 ```
 104-auto-clockin/
-├── clock_in.py          # 主要打卡腳本 (含 2FA Gmail 讀取)
-├── requirements.txt     # Python 依賴
-├── .env.example         # 環境變數範本
-├── .env                 # 你的實際設定 (不要上傳到 git)
-├── setup_cron.sh        # Cron job 自動設定腳本
-├── Dockerfile           # Docker 建構檔
-├── docker-compose.yml   # Docker Compose 設定
-├── README.md            # 說明文件
-├── logs/                # 執行日誌 (自動產生)
-└── screenshots/         # 截圖 (自動產生)
+├── clock_in.py          # Main clock-in script (with 2FA Gmail reader)
+├── requirements.txt     # Python dependencies
+├── .env.example         # Environment variable template
+├── .env                 # Your actual config (do not commit to git)
+├── setup_cron.sh        # Cron job setup script
+├── Dockerfile           # Docker build file
+├── docker-compose.yml   # Docker Compose config
+├── README.md            # Documentation
+├── logs/                # Execution logs (auto-generated)
+└── screenshots/         # Screenshots (auto-generated)
 ```
 
 ---
 
-## 疑難排解
+## Troubleshooting
 
-**Q: Gmail 連線失敗？**
-確認 `GMAIL_APP_PASSWORD` 是「應用程式密碼」而非你的登入密碼。也確認 Gmail 有開啟 IMAP（Gmail 設定 > 轉寄和 POP/IMAP > 啟用 IMAP）。
+**Q: Gmail connection failed?**
+Make sure `GMAIL_APP_PASSWORD` is an "App Password", not your regular Gmail login password. Also verify that IMAP is enabled in Gmail (Gmail Settings > Forwarding and POP/IMAP > Enable IMAP).
 
-**Q: 找不到驗證碼？**
-腳本會搜尋來自 `104.com.tw` 的信件。如果 104 的寄件者不同，請修改 `clock_in.py` 中的 `SENDER_FILTERS`。你也可以轉寄一封 104 驗證碼信件看看實際的寄件者地址。
+**Q: Can't find the verification code?**
+The script searches for emails from `104.com.tw`. If 104 uses a different sender address, update `SENDER_FILTERS` in `clock_in.py`. You can also forward a 104 verification email to check the actual sender address.
 
-**Q: 驗證碼信件延遲？**
-預設最多等 60 秒，每 5 秒檢查一次。可調整 `VERIFICATION_CODE_WAIT` 和 `VERIFICATION_CODE_POLL`。
+**Q: Verification code email is delayed?**
+By default, the script waits up to 60 seconds, checking every 5 seconds. You can adjust `VERIFICATION_CODE_WAIT` and `VERIFICATION_CODE_POLL`.
 
-**Q: 找不到帳號輸入框或打卡按鈕？**
-檢查 `screenshots/` 裡的截圖確認頁面狀態，然後用 F12 DevTools 找到正確的 selector。
+**Q: Can't find the account input field or punch button?**
+Check the screenshots in `screenshots/` to see the page state, then use F12 DevTools to find the correct selectors.
 
-**Q: 雲端伺服器 IP 不在白名單？**
-如果公司限制 IP 打卡，可能需要 VPN。
+**Q: Cloud server IP not whitelisted?**
+If your company restricts clock-in by IP, you may need a VPN.

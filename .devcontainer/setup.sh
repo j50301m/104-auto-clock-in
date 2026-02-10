@@ -2,10 +2,10 @@
 
 echo "🚀 Setting up Python & Playwright development environment..."
 
-# 更新 package lists
+# Update package lists
 sudo apt-get update
 
-# 安装基础工具
+# Install basic tools
 sudo apt-get install -y \
     curl \
     git \
@@ -14,16 +14,16 @@ sudo apt-get install -y \
     vim \
     zsh
 
-# 为 pwuser 用户安装 Oh My Zsh (Playwright 镜像的默认用户)
+# Install Oh My Zsh for pwuser (default user in Playwright image)
 if [ ! -d "/home/pwuser/.oh-my-zsh" ]; then
     echo "🐚 Installing Oh My Zsh for pwuser..."
     sudo -u pwuser sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" || true
-    
-    # 设置 zsh 为默认 shell
+
+    # Set zsh as default shell
     sudo chsh -s $(which zsh) pwuser || true
 fi
 
-# 安装项目依赖
+# Install project dependencies
 echo "📦 Installing Python dependencies..."
 if [ -f requirements.txt ]; then
     pip install --no-cache-dir -r requirements.txt
@@ -32,11 +32,11 @@ else
     pip install python-dotenv
 fi
 
-# Playwright 浏览器应该已经在镜像中，但确保最新版本
+# Playwright browsers should already be in the image, but ensure latest version
 echo "🌐 Ensuring Playwright browsers are installed..."
 playwright install chromium --with-deps || true
 
-# 设置权限
+# Set permissions
 sudo chmod +x setup_cron.sh || true
 
 echo "✅ Development environment setup complete!"

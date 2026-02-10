@@ -1,19 +1,19 @@
 # ============================================================
-# 104 企業大師自動打卡 - Docker Compose
+# 104 Pro Auto Clock-In - Docker Compose
 # ============================================================
 #
-# 使用方式:
-#   docker compose up clock-in   # 上班打卡
-#   docker compose up clock-out  # 下班打卡
+# Usage:
+#   docker compose up clock-in   # Clock in
+#   docker compose up clock-out  # Clock out
 #
-# 搭配 cron 使用:
+# With cron:
 #   50 8 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-in
 #   5 18 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-out
 #
 # ============================================================
 
 services:
-  # 開發環境
+  # Development environment
   104-clockin-dev:
     image: mcr.microsoft.com/playwright/python:v1.58.0-noble
     working_dir: /app
