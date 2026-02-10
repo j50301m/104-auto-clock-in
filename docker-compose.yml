@@ -7,8 +7,8 @@
 #   docker compose up clock-out  # Clock out
 #
 # With cron:
-#   50 8 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-in
-#   5 18 * * 1-5 cd /path/to/104-auto-clockin && docker compose up clock-out
+# 50 7 * * 1-5 cd /path/to/104-auto-clockin && /usr/bin/docker compose up --abort-on-container-exit clock-in >> logs/cron.log 2>&1                                                                                            
+# 30 17 * * 1-5 cd /path/to/104-auto-clockin && /usr/bin/docker compose up --abort-on-container-exit clock-out >> logs/cron.log 2>&1
 #
 # ============================================================
 
