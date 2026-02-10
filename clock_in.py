@@ -25,6 +25,9 @@ import logging
 import argparse
 import imaplib
 import email
+import json
+import urllib.request
+import urllib.parse
 from email.header import decode_header
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,6 +60,10 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 GMAIL_IMAP_SERVER = "imap.gmail.com"
 GMAIL_IMAP_PORT = 993
+
+# Telegram Bot 設定 (用於打卡成功通知)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # 驗證碼相關設定
 VERIFICATION_CODE_WAIT = 60      # 最多等待驗證碼幾秒
@@ -136,6 +143,49 @@ def take_screenshot(page, name: str, debug: bool = False):
 def is_weekday() -> bool:
     """檢查今天是否為工作日 (週一到週五)"""
     return datetime.now().weekday() < 5
+
+
+def send_telegram_notification(message: str) -> bool:
+    """
+    發送 Telegram 通知
+
+    Args:
+        message: 要發送的訊息內容
+
+    Returns:
+        成功回傳 True，失敗回傳 False
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.debug("未設定 Telegram bot，跳過通知")
+        return False
+
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+
+        # 使用 urllib 發送 POST 請求
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(data).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status == 200:
+                logger.info("✅ Telegram 通知已發送")
+                return True
+            else:
+                logger.warning(f"Telegram 通知發送失敗: HTTP {response.status}")
+                return False
+
+    except Exception as e:
+        logger.warning(f"發送 Telegram 通知時發生錯誤: {e}")
+        return False
 
 
 # ============================================================
@@ -835,6 +885,16 @@ def run(action: str, skip_weekday: bool = False, debug: bool = False):
                 # 步驟2: 打卡
                 if not punch(page, action):
                     raise Exception("打卡失敗")
+
+                # 步驟3: 發送 Telegram 通知
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                notification_message = (
+                    f"🎉 <b>104 打卡成功</b>\n\n"
+                    f"📋 類型: {action_text}\n"
+                    f"🕐 時間: {now}\n"
+                    f"✅ 狀態: 成功"
+                )
+                send_telegram_notification(notification_message)
 
                 logger.info(f"===== {action_text}完成 =====")
                 browser.close()
