@@ -13,40 +13,26 @@
 # ============================================================
 
 services:
-  # 开发环境
+  # 開發環境
   104-clockin-dev:
     image: mcr.microsoft.com/playwright/python:v1.58.0-noble
     working_dir: /app
     volumes:
       - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - PRO104_ACCOUNT=${PRO104_ACCOUNT}
-      - PRO104_PASSWORD=${PRO104_PASSWORD}
     command: sleep infinity
-    env_file:
-      - .env
-    
+
   clock-in:
     build: .
     command: ["--action", "clock_in"]
-    environment:
-      - PRO104_ACCOUNT=${PRO104_ACCOUNT}
-      - PRO104_PASSWORD=${PRO104_PASSWORD}
     volumes:
       - ./logs:/app/logs
       - ./screenshots:/app/screenshots
-    env_file:
-      - .env
+      - ./.env:/app/.env:ro
 
   clock-out:
     build: .
     command: ["--action", "clock_out"]
-    environment:
-      - PRO104_ACCOUNT=${PRO104_ACCOUNT}
-      - PRO104_PASSWORD=${PRO104_PASSWORD}
     volumes:
       - ./logs:/app/logs
       - ./screenshots:/app/screenshots
-    env_file:
-      - .env
+      - ./.env:/app/.env:ro
