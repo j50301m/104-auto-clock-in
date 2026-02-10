@@ -502,54 +502,52 @@ def login(page) -> bool:
         logger.info(f"取得驗證碼: {code}")
 
         # 輸入驗證碼
+        # 104 的 OTP 是 6 個獨立的 input 框，輸入完 6 碼後會自動送出
         verification_input.click()
         verification_input.fill("")
         verification_input.type(code, delay=random.randint(80, 200))
-        time.sleep(1)
+        time.sleep(2)
 
         take_screenshot(page, "04_verification_code_filled")
 
-        # 點擊驗證送出按鈕
-        verify_button = _find_element(
-            page, verification_submit_selectors, "驗證碼送出按鈕"
-        )
-        if verify_button:
-            verify_button.click()
-            logger.info("已送出驗證碼，等待驗證...")
-        else:
-            # 有些頁面輸入完會自動送出，或按 Enter 即可
-            try:
-                # 重新取得驗證碼輸入框（避免 DOM 分離問題）
-                verification_input_selectors = [
-                    'input[name="otp"]',
-                    'input[placeholder*="驗證碼"]',
-                    'input[id*="otp"]',
-                    'input[id*="verification"]',
-                    'input[type="tel"]'
-                ]
-                fresh_verification_input = _find_element(
-                    page, verification_input_selectors, "驗證碼輸入框"
-                )
-                if fresh_verification_input:
-                    fresh_verification_input.press("Enter")
-                    logger.info("嘗試按 Enter 送出驗證碼...")
-                else:
-                    # 如果輸入框也找不到，嘗試通用的 Enter 按鍵
-                    page.keyboard.press("Enter")
-                    logger.info("使用全域 Enter 送出驗證碼...")
-            except Exception as e:
-                logger.warning(f"按 Enter 失敗: {e}，嘗試其他提交方式...")
-                # 嘗試點擊任何可能的提交按鈕
-                submit_buttons = page.locator('button[type="submit"], input[type="submit"]').all()
-                for btn in submit_buttons:
-                    try:
-                        if btn.is_visible():
-                            btn.click()
-                            logger.info("找到並點擊了提交按鈕")
-                            break
-                    except:
-                        continue
+        # 104 的 OTP 輸入完 6 碼後通常會自動送出
+        # 先等幾秒看頁面是否已經跳轉
+        logger.info("等待 OTP 自動送出...")
+        time.sleep(3)
 
+        # 檢查頁面是否已經離開 OTP 頁面（自動送出成功）
+        otp_still_visible = False
+        try:
+            otp_check = page.wait_for_selector('input[name="otp"]', timeout=2000)
+            if otp_check and otp_check.is_visible():
+                otp_still_visible = True
+        except PlaywrightTimeout:
+            pass
+
+        if otp_still_visible:
+            # OTP 沒有自動送出，手動點擊「驗證」按鈕
+            logger.info("OTP 未自動送出，嘗試點擊「驗證」按鈕...")
+            verify_button = _find_element(
+                page,
+                [
+                    'button:has-text("驗證")',     # 截圖中的按鈕文字
+                    'button:has-text("確認")',
+                    'button:has-text("送出")',
+                    'button[type="submit"]',
+                ],
+                "驗證按鈕",
+                required=False,
+            )
+            if verify_button:
+                verify_button.click()
+                logger.info("已點擊「驗證」按鈕")
+            else:
+                page.keyboard.press("Enter")
+                logger.info("嘗試按 Enter 送出驗證碼")
+        else:
+            logger.info("OTP 已自動送出，頁面已跳轉")
+
+        # 等待頁面完成載入
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
         except PlaywrightTimeout:
@@ -566,10 +564,11 @@ def login(page) -> bool:
     # -----------------------------------------------------------
 
     service_link_selectors = [
-        'a.block.py-24',                  # 截圖中的精確 class
-        'a.block',                         # 備用: 只用 block class
-        'a:has-text("企業大師")',           # 備用: 用文字找
-        'a:has-text("104企業大師")',
+        'a[href="https://pro.104.com.tw/"]',  # 截圖中的精確 href
+        'a.block.py-24',                       # 截圖中的 class
+        '.MultipleProduct__product a',         # 父容器內的連結
+        'a:has(img[src*="104logo_pro"])',       # 包含 104 logo 的連結
+        'a:has-text("企業大師")',
     ]
 
     service_link = _find_element(
