@@ -759,15 +759,12 @@ class Pro104ClockIn:
         time.sleep(3)
         self.take_screenshot(f"09_after_punch_click_{action}")
 
-        # Wait for "Punch Success" popup
+        # Wait for "Punch Success" popup (J104BoxDialog)
         success_selectors = [
+            '.J104BoxDialog .title:has-text("打卡成功")',
+            '.J104BoxDialog:has-text("打卡成功")',
             'text="打卡成功"',
             ':has-text("打卡成功")',
-            '.modal:has-text("打卡成功")',
-            '.popup:has-text("打卡成功")',
-            '.alert:has-text("打卡成功")',
-            '.swal2-popup:has-text("打卡成功")',
-            '.toast:has-text("打卡成功")',
         ]
 
         for selector in success_selectors:
@@ -777,17 +774,24 @@ class Pro104ClockIn:
                     self.logger.info(f"✅ {action_text} successful!")
                     self.take_screenshot(f"10_punch_success_{action}")
 
-                    # Close popup (if there's a confirm button)
-                    try:
-                        close_btn = self.page.wait_for_selector(
-                            'button:has-text("確認"), button:has-text("確定"), '
-                            'button:has-text("OK"), .swal2-confirm',
-                            timeout=3000,
-                        )
-                        if close_btn and close_btn.is_visible():
-                            close_btn.click()
-                    except PlaywrightTimeout:
-                        pass
+                    # Close the J104BoxDialog popup
+                    close_selectors = [
+                        '.J104BoxDialog .close.fa',
+                        '.J104BoxDialog .close',
+                        '.J104BoxDialog button:has-text("確認")',
+                        '.J104BoxDialog button:has-text("確定")',
+                        'button:has-text("確認")',
+                        'button:has-text("確定")',
+                    ]
+                    for close_sel in close_selectors:
+                        try:
+                            close_btn = self.page.wait_for_selector(close_sel, timeout=3000)
+                            if close_btn and close_btn.is_visible():
+                                close_btn.click()
+                                self.logger.info("Popup closed")
+                                break
+                        except PlaywrightTimeout:
+                            continue
 
                     return True
             except PlaywrightTimeout:
