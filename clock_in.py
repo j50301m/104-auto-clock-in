@@ -736,69 +736,62 @@ class Pro104ClockIn:
 
         self.take_screenshot(f"08_punch_page_{action}")
 
-        # Find punch button
-        punch_selectors = [
-            'span.btn.btn-lg.btn-block',
-            '.PSC-HomeWidget.clockIn span.btn',
-            '.PSC-HomeWidget span.btn-block',
-            'span.btn-block:has-text("打卡")',
-            '.PSC-ClockIn-root span.btn',
-            'span:has-text("打卡")',
-        ]
+        # Wait for dynamic widgets to load
+        time.sleep(5)
 
-        punch_button = self.find_element(punch_selectors, "punch button")
+        # Find punch button via JS (Playwright selectors match hidden J104BoxDialog duplicates)
+        punch_button = self.page.evaluate_handle("""() => {
+            return document.querySelector('.PSC-ClockIn-root .right-side span.btn')
+                || document.querySelector('.PSC-ClockIn-root span.btn-block')
+                || document.querySelector('.PSC-ClockIn-root span.btn');
+        }""")
 
-        if not punch_button:
+        if not self.page.evaluate("(el) => el instanceof HTMLElement", punch_button):
             self.logger.error("Cannot find punch button!")
             self.take_screenshot("error_no_punch_button")
             return False
 
-        punch_button.click()
-        self.logger.info(f"Punch button clicked ({action_text})")
-
+        self.logger.info("Found punch button, clicking...")
+        self.take_screenshot(f"09_before_punch_click_{action}")
+        self.page.evaluate("(el) => el.click()", punch_button)
         time.sleep(3)
-        self.take_screenshot(f"09_after_punch_click_{action}")
+        self.take_screenshot(f"10_after_punch_click_{action}")
 
-        # Wait for "Punch Success" popup (J104BoxDialog)
-        success_selectors = [
-            '.J104BoxDialog .title:has-text("打卡成功")',
-            '.J104BoxDialog:has-text("打卡成功")',
-            'text="打卡成功"',
-            ':has-text("打卡成功")',
-        ]
+        # Wait for visible "Punch Success" popup
+        success = self.page.evaluate_handle("""() => {
+            return new Promise((resolve) => {
+                const check = () => {
+                    const dialogs = document.querySelectorAll('.J104BoxDialog');
+                    for (const d of dialogs) {
+                        if (d.offsetParent !== null && d.innerText.includes('打卡成功')) {
+                            resolve(d);
+                            return;
+                        }
+                    }
+                };
+                check();
+                const observer = new MutationObserver(check);
+                observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+                setTimeout(() => { observer.disconnect(); resolve(null); }, 8000);
+            });
+        }""")
 
-        for selector in success_selectors:
-            try:
-                element = self.page.wait_for_selector(selector, timeout=5000)
-                if element:
-                    self.logger.info(f"✅ {action_text} successful!")
-                    self.take_screenshot(f"10_punch_success_{action}")
+        if self.page.evaluate("(el) => el instanceof HTMLElement", success):
+            self.logger.info(f"✅ {action_text} successful!")
+            time.sleep(1)
+            self.take_screenshot(f"11_punch_success_{action}")
 
-                    # Close the J104BoxDialog popup
-                    close_selectors = [
-                        '.J104BoxDialog .close.fa',
-                        '.J104BoxDialog .close',
-                        '.J104BoxDialog button:has-text("確認")',
-                        '.J104BoxDialog button:has-text("確定")',
-                        'button:has-text("確認")',
-                        'button:has-text("確定")',
-                    ]
-                    for close_sel in close_selectors:
-                        try:
-                            close_btn = self.page.wait_for_selector(close_sel, timeout=3000)
-                            if close_btn and close_btn.is_visible():
-                                close_btn.click()
-                                self.logger.info("Popup closed")
-                                break
-                        except PlaywrightTimeout:
-                            continue
+            # Close popup
+            self.page.evaluate("""(dialog) => {
+                const btn = dialog.querySelector('.close')
+                    || dialog.querySelector('button');
+                if (btn) btn.click();
+            }""", success)
+            self.logger.info("Popup closed")
+            return True
 
-                    return True
-            except PlaywrightTimeout:
-                continue
-
-        self.logger.warning("'Punch Success' message not found, please check screenshot to confirm result")
-        self.take_screenshot(f"10_punch_result_unknown_{action}")
+        self.logger.warning("'Punch Success' message not found, check screenshot to confirm")
+        self.take_screenshot(f"11_punch_result_unknown_{action}")
         return True
 
     def run(self, action: str, skip_weekday_check: bool = False):
